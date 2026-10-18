@@ -1,4 +1,5 @@
 import { StatusPoste } from '@prisma/client';
+import type { PosteProvisionado } from '../common/provisionamento';
 import {
   MsgComando,
   MsgEvento,
@@ -12,16 +13,12 @@ import {
   EstadoPoste,
   estadoInicial,
   gerarLeitura,
-  PosteAtual,
   passoSensor,
   passoStatus,
   probDeteccaoPorTick,
 } from '../simulador/simulador.engine';
 
-/// Poste como recebido no provisionamento (`GET /postes` da nuvem).
-export interface PosteProvisionado extends PosteAtual {
-  bairro: string;
-}
+export type { PosteProvisionado };
 
 /// Mensagem pronta para o broker.
 export interface Publicacao {

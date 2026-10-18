@@ -1,6 +1,9 @@
 import {
+  assinaturaNuvem,
   assinaturaTodosPostes,
+  parseTopicoNuvem,
   parseTopicoPoste,
+  topicoNuvem,
   slugBairro,
   topicoPoste,
 } from './topicos-mqtt';
@@ -38,5 +41,18 @@ describe('tópicos MQTT', () => {
     expect(parseTopicoPoste('itaguari/iluminacao/_edge/estado')).toBeNull();
     expect(parseTopicoPoste('outra/raiz/centro/P-1/telemetria')).toBeNull();
     expect(parseTopicoPoste('itaguari/iluminacao/centro/P-1/xyz')).toBeNull();
+  });
+
+  it('monta e desmonta os tópicos fog → nuvem por bairro', () => {
+    expect(topicoNuvem('Jardim Primavera', 'resumo')).toBe(
+      'itaguari/nuvem/jardim-primavera/resumo',
+    );
+    expect(assinaturaNuvem('comando')).toBe('itaguari/nuvem/+/comando');
+    expect(parseTopicoNuvem('itaguari/nuvem/centro/alerta')).toEqual({
+      bairroSlug: 'centro',
+      grandeza: 'alerta',
+    });
+    expect(parseTopicoNuvem('itaguari/nuvem/_fog/estado')).toBeNull();
+    expect(parseTopicoNuvem('itaguari/nuvem/centro/xyz')).toBeNull();
   });
 });

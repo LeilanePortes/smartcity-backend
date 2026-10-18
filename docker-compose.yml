@@ -56,7 +56,7 @@ services:
       retries: 5
       start_period: 300s
 
-  # Broker MQTT: liga as camadas edge (postes) → fog (gateways) → nuvem (API).
+  # Broker MQTT do campo (rede local): postes (edge) ↔ gateways (fog).
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: smartcity-mosquitto
@@ -105,6 +105,59 @@ services:
       EDGE_INTERVALO_TELEMETRIA_MS: ${EDGE_INTERVALO_TELEMETRIA_MS:-10000}
       EDGE_INTERVALO_SAUDE_MS: ${EDGE_INTERVALO_SAUDE_MS:-30000}
       EDGE_INTERVALO_FALHAS_MS: ${EDGE_INTERVALO_FALHAS_MS:-30000}
+
+  # Broker MQTT da nuvem (uplink): gateways (fog) ↔ API. Separado do broker do
+  # campo para que a queda da nuvem não afete a rede local (e para demonstrar o
+  # buffer do fog: `docker compose stop mosquitto-nuvem`).
+  mosquitto-nuvem:
+    image: eclipse-mosquitto:2
+    container_name: smartcity-mosquitto-nuvem
+    restart: unless-stopped
+    ports:
+      - '1884:1883'
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'mosquitto_sub',
+          '-h',
+          'localhost',
+          '-t',
+          '$$SYS/broker/uptime',
+          '-C',
+          '1',
+          '-W',
+          '3',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Camada fog: um gateway por bairro entre o campo e a nuvem — diagnostica
+  # status, agrega a telemetria e sobe só resumos, eventos e alertas.
+  fog:
+    build: .
+    container_name: smartcity-fog
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    # Sem condição de saúde de propósito: o fog sobe mesmo com a nuvem fora e
+    # guarda as mensagens até o uplink voltar.
+    entrypoint: []
+    command: ['bun', 'run', 'dist/fog/main.js']
+    environment:
+      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_NUVEM_URL: mqtt://mosquitto-nuvem:1883
+      FOG_API_URL: http://app:3000
+      FOG_LIMIAR_CONSUMO_ALTO: ${FOG_LIMIAR_CONSUMO_ALTO:-1.5}
+      FOG_LIMIAR_RETORNO_NORMAL: ${FOG_LIMIAR_RETORNO_NORMAL:-1.3}
+      FOG_TIMEOUT_OFFLINE_MS: ${FOG_TIMEOUT_OFFLINE_MS:-30000}
+      FOG_JANELA_RESUMO_MS: ${FOG_JANELA_RESUMO_MS:-60000}
 
 volumes:
   smartcity-pgdata:
