@@ -25,6 +25,7 @@ async function bootstrap() {
     .setVersion('1.0')
     .addTag('Postes', 'Mapa, detalhe, histórico e status dos postes')
     .addTag('KPIs', 'Indicadores agregados do dashboard')
+    .addTag('Arquitetura', 'Estado das camadas edge · fog · nuvem')
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, config), {
     jsonDocumentUrl: 'docs-json',

@@ -12,8 +12,9 @@ da API rodando com o seed + `bun run db:backfill` padrão.
 - **CORS:** liberado para qualquer origem
 
 > **Mock acadêmico.** Os dados são sintéticos, mas coerentes com o PRD. As janelas
-> de data são calculadas em UTC. O simulador roda junto com a API e altera
-> luminosidade, consumo e status continuamente.
+> de data são calculadas em UTC. Os dados ao vivo vêm da arquitetura em camadas
+> (postes simulados → gateways fog → API, via MQTT) e mudam luminosidade, consumo e
+> status continuamente. Ver [`GET /arquitetura`](#get-arquitetura).
 
 ---
 
@@ -31,6 +32,8 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [`GET /kpis`](#get-kpis)
   - [`GET /kpis/maior-consumo`](#get-kpismaior-consumo)
   - [`GET /kpis/postes-por-status`](#get-kpispostes-por-status)
+- **Arquitetura**
+  - [`GET /arquitetura`](#get-arquitetura)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
 - [Notas do mock](#notas-do-mock)
@@ -532,6 +535,83 @@ Contagem de postes por status — barra empilhada do dashboard (PRD §5.3).
 }
 ```
 
+## Arquitetura
+
+### `GET /arquitetura`
+
+Estado das camadas **edge · fog · nuvem** — para a tela de arquitetura do app.
+É um painel do "agora" (memória da API, não histórico). Atualiza a cada janela do
+fog (60 s); para a tela, basta consultar a cada 10–15 s.
+
+**Sem parâmetros.**
+
+**Resposta `200`:**
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `modo` | `"camadas"` \| `"interno"` | `camadas`: dados vêm do fog. `interno`: simulador embutido (modo de reserva) — aí `edge`, `fog` e `trafego` vêm `null` e `alertas` vazio |
+| `nuvem.brokerConectado` | boolean | A API está conectada ao broker MQTT da nuvem |
+| `edge` | object \| null | `null` até o primeiro relatório do fog |
+| `edge.online` | boolean \| null | Simulador de campo (os 248 postes) no ar, visto pelo fog |
+| `fog` | object \| null | `null` até o fog se anunciar |
+| `fog.online` | boolean | Gateways no ar (vira `false` pelo *Last Will* se o fog cair) |
+| `fog.gateways[]` | array | Um por bairro: `{ bairro, postes, online }` |
+| `fog.buffer` | number | Mensagens guardadas no fog esperando a nuvem (0 = em dia) |
+| `fog.atualizadoEm` | string (ISO) | Último relatório do fog |
+| `trafego` | object \| null | Último relatório de banda (uma janela) |
+| `trafego.janelaS` | number | Duração da janela, em segundos |
+| `trafego.entrada` | `{ msgs, bytes }` | O que chegou dos postes ao fog na janela |
+| `trafego.saida` | `{ msgs, bytes }` | O que o fog subiu para a nuvem na janela |
+| `trafego.reducaoMsgsPct` / `reducaoBytesPct` | number \| null | Redução percentual (0–100) na subida |
+| `trafego.postes` | `{ total, online }` | Postes reportando, segundo o fog |
+| `trafego.em` | string (ISO) | Fim da janela |
+| `alertas[]` | array | Até 20 mudanças de status diagnosticadas pelo fog, **mais recentes primeiro** |
+| `alertas[].posteId` / `codigo` / `bairro` | string | |
+| `alertas[].statusAnterior` / `status` | `StatusPoste` | |
+| `alertas[].motivo` | string | Ex.: `"sem telemetria há 31 s"`, `"consumo 2,10× a mediana do bairro"` |
+| `alertas[].em` | string (ISO) | |
+| `geradoEm` | string (ISO) | |
+
+```json
+{
+  "modo": "camadas",
+  "nuvem": { "brokerConectado": true },
+  "edge": { "online": true },
+  "fog": {
+    "online": true,
+    "gateways": [
+      { "bairro": "Centro", "postes": 46, "online": 46 },
+      { "bairro": "Setor Leste", "postes": 31, "online": 31 }
+    ],
+    "buffer": 0,
+    "atualizadoEm": "2026-10-18T18:11:06.722Z"
+  },
+  "trafego": {
+    "janelaS": 60,
+    "entrada": { "msgs": 1586, "bytes": 237231 },
+    "saida": { "msgs": 137, "bytes": 98834 },
+    "reducaoMsgsPct": 91,
+    "reducaoBytesPct": 58,
+    "postes": { "total": 248, "online": 243 },
+    "em": "2026-10-18T18:11:06.722Z"
+  },
+  "alertas": [
+    {
+      "posteId": "e383b828-8b99-4e4d-9468-c5d8d50fda7c",
+      "codigo": "P-062",
+      "bairro": "Setor Leste",
+      "statusAnterior": "CONSUMO_ALTO",
+      "status": "NORMAL",
+      "motivo": "consumo 0,98× a mediana do bairro",
+      "em": "2026-10-18T18:11:26.712Z"
+    }
+  ],
+  "geradoEm": "2026-10-18T18:11:46.729Z"
+}
+```
+
+(`gateways` traz os 9 bairros; o exemplo mostra 2.)
+
 ---
 
 ## `GET /`
@@ -556,8 +636,11 @@ Metadados da API (não aparece no Swagger).
 WebSocket puro; use `socket.io-client`). Namespace `/tempo-real`. Sem
 autenticação. CORS liberado.
 
-As atualizações ao vivo vêm do simulador. Com `SIMULADOR_ENABLED=false` o gateway
-ainda entrega o estado inicial e as mudanças manuais de status (via `PATCH`).
+As atualizações ao vivo vêm da camada fog (eventos do sensor na hora; telemetria
+e status pelo resumo de cada minuto e pelos alertas). O formato é o mesmo no modo
+de reserva (`SIMULADOR_MODO=interno`, simulador embutido). Com
+`SIMULADOR_ENABLED=false` o gateway ainda entrega o estado inicial e as mudanças
+manuais de status (via `PATCH`).
 
 ### Salas
 
@@ -706,10 +789,14 @@ socket.on('poste:atualizado', (data) {});
   comparação anual dos KPIs).
 - **Fuso.** Todo cálculo de janela e todo `date_trunc` é em **UTC**. O único
   ponto que usa hora local é o início de `telemetria?periodo=hoje`.
-- **Simulador.** Roda junto com a API (`SIMULADOR_ENABLED=true`, default). A cada
-  poucos segundos altera luminosidade (piso 50 % ↔ pico 100 %), grava leituras de
-  consumo e move postes entre `NORMAL`/`CONSUMO_ALTO`/`FALHA_OFFLINE` mantendo a
-  distribuição do PRD. `MANUTENCAO` só muda via `PATCH`.
+- **Camadas (padrão no docker compose, `SIMULADOR_MODO=camadas`).** Os 248 postes
+  rodam como dispositivos MQTT (edge) e decidem a luminosidade localmente (piso
+  50 % ↔ pico 100 %). Os gateways por bairro (fog) diagnosticam `CONSUMO_ALTO` e
+  `FALHA_OFFLINE` e sobem para a API um **resumo por minuto** (uma leitura média por
+  poste), os eventos do sensor na hora e os alertas. `MANUTENCAO` só muda via
+  `PATCH`, que também envia o comando até o poste.
+- **Reserva (`SIMULADOR_MODO=interno`).** O simulador embutido na API faz o mesmo
+  papel, com leituras a cada 10 s, no mesmo formato de resposta.
 - **`consumoInstantaneoKw`** típico: ~0,05 kW no piso, ~0,10 kW no pico,
   ~0,10–0,25 kW quando `CONSUMO_ALTO`, `0` quando `FALHA_OFFLINE`/`MANUTENCAO`.
 - Ver também: [`docs/contrato-api.md`](./docs/contrato-api.md),

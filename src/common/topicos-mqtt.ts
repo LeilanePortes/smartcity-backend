@@ -202,3 +202,22 @@ export interface MsgFogEstado {
   buffer: number;
   em: string;
 }
+
+/// Relatório de banda dos gateways, publicado a cada janela (retido).
+export const TOPICO_FOG_TRAFEGO = `${RAIZ_NUVEM}/_fog/trafego`;
+
+/// Tráfego de uma janela: o que entrou do campo × o que subiu para a nuvem.
+export interface MsgFogTrafego {
+  janelaS: number;
+  entrada: { msgs: number; bytes: number };
+  saida: { msgs: number; bytes: number };
+  /// Redução percentual (0–100) de mensagens e de bytes na subida.
+  reducaoMsgsPct: number | null;
+  reducaoBytesPct: number | null;
+  buffer: number;
+  postes: { total: number; online: number };
+  gateways: Array<{ bairro: string; postes: number; online: number }>;
+  /// Presença do simulador de campo, vista pelo fog (null = ainda não informou).
+  edgeOnline: boolean | null;
+  em: string;
+}

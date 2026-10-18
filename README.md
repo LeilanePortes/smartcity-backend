@@ -245,10 +245,26 @@ edge (248 postes) ──1883──► fog (9 gateways) ──1884──► nuvem
 |---|---|---|
 | **Edge** | `edge` | Os 248 controladores de poste. Cada um decide a luminosidade **localmente** (sensor 360° → pico 100%, veículo se afasta → piso 50%), sem depender da rede, e publica o que mediu. |
 | **Fog** | `fog` | Um gateway por bairro: diagnostica o status dos postes, agrega a telemetria e sobe para a nuvem só resumos, eventos e alertas. |
-| **Nuvem** | `app` | API, histórico, KPIs e tempo real para o app. |
+| **Nuvem** | `app` | Recebe do fog resumos, eventos e alertas, grava o histórico, calcula os KPIs e entrega o tempo real ao app; envia ao poste os comandos de manutenção. |
 
-Por enquanto a nuvem ainda usa o simulador interno; edge e fog funcionam em
-paralelo, e a API passa a consumir o fog na próxima etapa.
+**Modo de operação** (`SIMULADOR_MODO`):
+
+| Modo | De onde vêm os dados ao vivo | Quando usar |
+|---|---|---|
+| `camadas` (padrão no compose) | Do fog, pelo broker da nuvem. O simulador embutido fica em espera (só a limpeza de retenção roda). | Sempre — é a arquitetura edge · fog · nuvem. |
+| `interno` (padrão fora do compose) | Do simulador embutido na API, como antes das camadas. | **Reserva:** se algo nas camadas falhar, `SIMULADOR_MODO=interno docker compose up -d app`. Para voltar: `docker compose up -d app`. |
+
+O formato das respostas e do WebSocket é o mesmo nos dois modos — o app não
+percebe a diferença. O estado das camadas fica em [`GET /arquitetura`](./API.md#get-arquitetura).
+
+**Regenerar a rede** (apaga e recria postes e histórico simulados, com IDs novos):
+
+```bash
+docker compose stop edge fog
+DB_BOOTSTRAP=force docker compose up -d --force-recreate --no-deps app   # espere ficar healthy
+docker compose up -d --force-recreate --no-deps app                      # volta a auto (senão regenera a cada restart)
+docker compose up -d --force-recreate --no-deps edge fog                 # reprovisionam com os IDs novos
+```
 
 **Tópicos** — padrão `organização/área/dispositivo/grandeza`
 ([`src/common/topicos-mqtt.ts`](./src/common/topicos-mqtt.ts)):
@@ -302,6 +318,11 @@ docker exec smartcity-mosquitto-nuvem mosquitto_sub -t 'itaguari/nuvem/#' -v  # 
 # comando do técnico: nuvem → fog → poste
 docker exec smartcity-mosquitto-nuvem mosquitto_pub -q 1 \
   -t 'itaguari/nuvem/centro/comando' -m '{"codigo":"P-001","status":"MANUTENCAO"}'
+
+# manutenção pela API: grava no banco e o comando desce até o poste
+curl -X PATCH localhost:3000/postes/<id>/status -H 'Content-Type: application/json' \
+  -d '{"status":"MANUTENCAO"}'
+curl -s localhost:3000/arquitetura      # camadas, gateways, banda e alertas
 
 # queda da nuvem: o fog guarda e reenvia ao voltar
 docker compose stop mosquitto-nuvem; sleep 30; docker compose start mosquitto-nuvem

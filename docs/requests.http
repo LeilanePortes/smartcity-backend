@@ -53,3 +53,8 @@ GET {{host}}/kpis/maior-consumo?periodo=semana&limite=5
 
 ### Postes por status
 GET {{host}}/kpis/postes-por-status
+
+### --- Arquitetura ---
+
+### Estado das camadas edge · fog · nuvem
+GET {{host}}/arquitetura

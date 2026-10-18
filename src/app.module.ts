@@ -11,6 +11,7 @@ import { EventosModule } from './eventos/eventos.module';
 import { AgregadosModule } from './agregados/agregados.module';
 import { SimuladorModule } from './simulador/simulador.module';
 import { TempoRealModule } from './tempo-real/tempo-real.module';
+import { IngestaoModule } from './ingestao/ingestao.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { TempoRealModule } from './tempo-real/tempo-real.module';
     AgregadosModule,
     SimuladorModule,
     TempoRealModule,
+    IngestaoModule,
   ],
   controllers: [AppController],
   providers: [AppService],
