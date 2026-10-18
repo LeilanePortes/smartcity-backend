@@ -8,9 +8,14 @@ import {
 
 const prisma = new PrismaClient();
 
-// Centro aproximado de Itaguari, GO.
-const CENTRO_LAT = -15.954;
-const CENTRO_LON = -49.5905;
+// Centro real de Itaguari, GO.
+const CENTRO_LAT = -15.920801;
+const CENTRO_LON = -49.606172;
+
+// Fator de redução aplicado aos deslocamentos de bairro (BAIRROS[].dLat/dLon)
+// e ao jitter/passo das ruas, para manter os 248 postes dentro do núcleo
+// urbano real da cidade (malha de ruas pequena, raio < ~1 km do centro).
+const RAIO_ESCALA = 0.45;
 
 // PRD seção 3: distribuição inicial de status.
 const DISTRIBUICAO_STATUS: Array<[StatusPoste, number]> = [
@@ -196,9 +201,11 @@ function gerarPostes(): PosteSeed[] {
     const qtd = alvo[i];
     // Orientação da via (N-S ou L-O) e ponto inicial jitterado.
     const horizontal = rand() > 0.5;
-    const baseLat = CENTRO_LAT + via.dLat + (rand() - 0.5) * 0.002;
-    const baseLon = CENTRO_LON + via.dLon + (rand() - 0.5) * 0.002;
-    const passo = 0.00035; // ~35 m entre postes
+    const baseLat =
+      CENTRO_LAT + via.dLat * RAIO_ESCALA + (rand() - 0.5) * 0.0008;
+    const baseLon =
+      CENTRO_LON + via.dLon * RAIO_ESCALA + (rand() - 0.5) * 0.0008;
+    const passo = 0.00028; // ~30 m entre postes
 
     for (let k = 0; k < qtd; k++) {
       numero++;
