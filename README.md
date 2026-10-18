@@ -281,6 +281,9 @@ docker compose up -d --force-recreate --no-deps edge fog                 # repro
 | `itaguari/nuvem/<bairro>/alerta` | fog → nuvem | 1 | na hora: mudança de status diagnosticada (`statusAnterior`, `status`, `motivo`) |
 | `itaguari/nuvem/<bairro>/comando` | nuvem → fog | 1 | `{ "codigo": "P-042", "status": "MANUTENCAO" \| "NORMAL" }` — repassado ao poste |
 | `itaguari/nuvem/_fog/estado` | fog → nuvem | 1 (retido) | presença dos gateways (*Last Will*) e tamanho do buffer |
+| `itaguari/nuvem/_fog/trafego` | fog → nuvem | 1 (retido) | relatório de banda de cada janela (usado por `GET /arquitetura`) |
+| `itaguari/nuvem/<bairro>/ota` → `itaguari/iluminacao/<bairro>/<poste>/ota` | nuvem → fog → edge | 1 | ordem de atualização `{ "codigo", "versao" }` |
+| `itaguari/iluminacao/<bairro>/<poste>/ota-resultado` → `itaguari/nuvem/<bairro>/ota-resultado` | edge → fog → nuvem | 1 | resultado da instalação (sucesso ou rollback A/B) |
 
 O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`).
 
@@ -327,6 +330,53 @@ curl -s localhost:3000/arquitetura      # camadas, gateways, banda e alertas
 # queda da nuvem: o fog guarda e reenvia ao voltar
 docker compose stop mosquitto-nuvem; sleep 30; docker compose start mosquitto-nuvem
 ```
+
+## OTA com grupo canário
+
+Atualização remota de firmware da frota, no modelo do material "Grupo Canário:
+atualizações seguras em frotas IoT" — tudo simulado, sem hardware
+([`src/ota/`](./src/ota/), [`src/common/firmware.ts`](./src/common/firmware.ts)).
+
+| Versão | Perfil | O que acontece |
+|---|---|---|
+| `2.4.1` | estável | versão inicial em campo |
+| `2.5.0` | estável | passa por todas as ondas e conclui |
+| `3.0.0` | **defeito de energia** (consumo ~1,8×) | passa no autoteste; o canário consome mais que o controle e a nuvem **reverte a frota** |
+| `3.0.1` | **falha no autoteste** | cada aparelho volta sozinho para a versão anterior (**rollback A/B**); a nuvem vê 100% de falha e para |
+
+**Como funciona:**
+
+1. **Ondas** de 5% → 25% → 50% → 100% da frota elegível (5% é o tamanho sugerido
+   para frotas de centenas de aparelhos). Postes em manutenção ou offline ficam de fora.
+2. **Grupo canário representativo:** postes de todos os bairros (rodízio), só
+   `NORMAL` na primeira onda. **Grupo de controle:** amostra parecida que segue na
+   versão antiga — a comparação isola o efeito da versão do "ruído" do ambiente.
+3. **No poste (edge):** grava a versão, reinicia (fica mudo ~8 s), faz o autoteste e
+   confirma, ou volta sozinho para a anterior (partições A/B). Informa o resultado.
+4. **Portão** ao fim de cada janela (120 s), com critérios escritos antes de começar:
+
+| Situação | Decisão |
+|---|---|
+| Falha de instalação > 5% dos que tentaram | **REVERTER** (na hora, se todos já responderam) |
+| Menos de 60% do canário reportou depois de instalar | **ESTENDER** a observação (até 2 vezes) |
+| Consumo normalizado do canário ≥ 1,5× o do controle | **REVERTER** |
+| Métricas próximas às do controle | **AVANÇAR** (ou **CONCLUIR** na última onda) |
+
+**Reverter a frota** = reenviar a versão anterior a quem instalou a nova (inclusive
+quem terminou de instalar depois da decisão). Em aparelhos com proteção
+*anti-rollback*, isso seria publicar o código antigo com um número de versão maior.
+
+```bash
+curl -s localhost:3000/ota                                     # catálogo, versões em campo, implantação
+curl -s -X POST localhost:3000/ota/implantacoes -H 'Content-Type: application/json' \
+  -d '{"versao":"3.0.0"}'                                      # o canário pega o defeito em ~2 min
+curl -s -X POST localhost:3000/ota/reverter                    # reversão manual
+docker compose logs -f app edge | grep -i ota
+```
+
+Configurável por `OTA_ONDAS`, `OTA_JANELA_S`, `OTA_LIMIAR_FALHA_PCT`,
+`OTA_LIMIAR_RAZAO_CONSUMO` e `EDGE_DURACAO_OTA_MS`. O estado da implantação fica em
+memória na API (reiniciar a API zera o histórico de implantações).
 
 ## Documentação (Fase 6)
 

@@ -58,3 +58,17 @@ GET {{host}}/kpis/postes-por-status
 
 ### Estado das camadas edge · fog · nuvem
 GET {{host}}/arquitetura
+
+### --- OTA (firmware com grupo canário) ---
+
+### Estado: catálogo, versões em campo e implantação
+GET {{host}}/ota
+
+### Distribuir uma versão (2.5.0 estável · 3.0.0 defeito de energia · 3.0.1 falha no autoteste)
+POST {{host}}/ota/implantacoes
+Content-Type: application/json
+
+{ "versao": "2.5.0" }
+
+### Reverter a implantação em andamento
+POST {{host}}/ota/reverter

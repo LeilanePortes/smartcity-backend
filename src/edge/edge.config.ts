@@ -10,6 +10,8 @@ export interface EdgeConfig {
   intervaloSaudeMs: number;
   intervaloFalhasMs: number;
   intervaloRelatorioMs: number;
+  /// Tempo de gravação + reinício numa atualização OTA.
+  duracaoOtaMs: number;
 }
 
 function numero(raw: string | undefined, padrao: number): number {
@@ -29,5 +31,6 @@ export function lerEdgeConfig(
     intervaloSaudeMs: numero(env.EDGE_INTERVALO_SAUDE_MS, 30_000),
     intervaloFalhasMs: numero(env.EDGE_INTERVALO_FALHAS_MS, 30_000),
     intervaloRelatorioMs: numero(env.EDGE_INTERVALO_RELATORIO_MS, 60_000),
+    duracaoOtaMs: numero(env.EDGE_DURACAO_OTA_MS, 8_000),
   };
 }

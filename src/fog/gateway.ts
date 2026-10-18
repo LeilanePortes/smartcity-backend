@@ -196,6 +196,13 @@ export class GatewayBairro {
     return topicoPoste(this.bairro, codigo, 'comando');
   }
 
+  /** Tópico de um poste deste bairro no campo, ou null se ele não é daqui. */
+  topicoNoCampo(codigo: string, grandeza: 'ota'): string | null {
+    return this.postes.has(codigo)
+      ? topicoPoste(this.bairro, codigo, grandeza)
+      : null;
+  }
+
   /** Fecha a janela de agregação e devolve o resumo do bairro. */
   fecharJanela(agoraMs = Date.now()): MsgResumo {
     const inicio = this.inicioJanelaMs;

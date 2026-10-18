@@ -19,7 +19,7 @@ import { EdgeConfig, lerEdgeConfig } from './edge.config';
 
 const log = (msg: string): void => console.log(`[edge] ${msg}`);
 
-type Grandeza = 'telemetria' | 'evento' | 'saude';
+type Grandeza = 'telemetria' | 'evento' | 'saude' | 'ota';
 
 /// Contagem de mensagens por janela, para o relatório de banda.
 class Contador {
@@ -27,6 +27,7 @@ class Contador {
     telemetria: 0,
     evento: 0,
     saude: 0,
+    ota: 0,
   };
   private bytes = 0;
   private descartadas = 0;
@@ -41,15 +42,17 @@ class Contador {
   }
 
   fecharJanela(): string {
-    const total = this.msgs.telemetria + this.msgs.evento + this.msgs.saude;
+    const total =
+      this.msgs.telemetria + this.msgs.evento + this.msgs.saude + this.msgs.ota;
     const resumo =
       `${total} msgs (${(this.bytes / 1024).toFixed(1)} KB) · ` +
       `telemetria ${this.msgs.telemetria} · eventos ${this.msgs.evento} · ` +
       `saúde ${this.msgs.saude}` +
+      (this.msgs.ota ? ` · OTA ${this.msgs.ota}` : '') +
       (this.descartadas
         ? ` · ${this.descartadas} descartadas (sem broker)`
         : '');
-    this.msgs = { telemetria: 0, evento: 0, saude: 0 };
+    this.msgs = { telemetria: 0, evento: 0, saude: 0, ota: 0 };
     this.bytes = 0;
     this.descartadas = 0;
     return resumo;
@@ -85,14 +88,23 @@ function iniciar(config: EdgeConfig, campo: CampoEdge): void {
       qos: 1,
       retain: true,
     });
-    cliente.subscribe(assinaturaTodosPostes('comando'), { qos: 1 });
+    cliente.subscribe(
+      [assinaturaTodosPostes('comando'), assinaturaTodosPostes('ota')],
+      { qos: 1 },
+    );
   });
   cliente.on('reconnect', () => log('reconectando ao broker...'));
   cliente.on('error', (erro) => log(`erro MQTT: ${erro.message}`));
 
   cliente.on('message', (topico, payload) => {
-    const codigo = campo.aplicarComando(topico, payload.toString());
-    if (codigo) log(`comando aplicado em ${codigo}: ${payload.toString()}`);
+    const texto = payload.toString();
+    if (topico.endsWith('/ota')) {
+      const codigo = campo.aplicarOta(topico, texto);
+      if (codigo) log(`OTA recebida em ${codigo}: ${texto} — reiniciando`);
+      return;
+    }
+    const codigo = campo.aplicarComando(topico, texto);
+    if (codigo) log(`comando aplicado em ${codigo}: ${texto}`);
   });
 
   const publicar = (grandeza: Grandeza, lote: Publicacao[]): void => {
@@ -117,9 +129,21 @@ function iniciar(config: EdgeConfig, campo: CampoEdge): void {
     }, ms);
   };
 
-  agendar('sensores', config.intervaloSensoresMs, () =>
-    publicar('evento', campo.tickSensores()),
-  );
+  agendar('sensores', config.intervaloSensoresMs, () => {
+    publicar('evento', campo.tickSensores());
+    const resultados = campo.tickOta();
+    for (const r of resultados) {
+      const msg = JSON.parse(r.payload) as {
+        codigo: string;
+        versaoAtual: string;
+        sucesso: boolean;
+      };
+      log(
+        `OTA ${msg.codigo}: ${msg.sucesso ? 'instalada' : 'ROLLBACK'} → rodando ${msg.versaoAtual}`,
+      );
+    }
+    publicar('ota', resultados);
+  });
   agendar('telemetria', config.intervaloTelemetriaMs, () =>
     publicar('telemetria', campo.tickTelemetria()),
   );
@@ -164,6 +188,8 @@ async function main(): Promise<void> {
     postes,
     config.versaoFirmware,
     config.intervaloSensoresMs,
+    Date.now(),
+    config.duracaoOtaMs,
   );
   log(
     `${campo.total} postes provisionados (firmware ${config.versaoFirmware}) | ` +

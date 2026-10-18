@@ -96,4 +96,79 @@ describe('CampoEdge', () => {
       ),
     ).toBeNull();
   });
+
+  describe('OTA', () => {
+    const ota = (codigo: string, versao: string) => ({
+      topico: `itaguari/iluminacao/centro/${codigo}/ota`,
+      payload: JSON.stringify({ versao, em: '2026-10-18T22:00:00.000Z' }),
+    });
+
+    it('instala: fica mudo enquanto reinicia e depois roda a versão nova', () => {
+      const campo = new CampoEdge([poste('P-050')], '2.4.1', 5_000, 0, 8_000);
+      const { topico, payload } = ota('P-050', '2.5.0');
+
+      expect(campo.aplicarOta(topico, payload, 0)).toBe('P-050');
+      expect(campo.aplicarOta(topico, payload, 1_000)).toBeNull(); // já instalando
+      expect(campo.tickTelemetria(new Date(4_000))).toHaveLength(0);
+      expect(campo.tickOta(new Date(4_000))).toHaveLength(0);
+
+      const [resultado] = campo.tickOta(new Date(8_000));
+      expect(resultado.topico).toBe(
+        'itaguari/iluminacao/centro/P-050/ota-resultado',
+      );
+      expect(JSON.parse(resultado.payload)).toMatchObject({
+        versaoAlvo: '2.5.0',
+        versaoAtual: '2.5.0',
+        sucesso: true,
+      });
+      const saude = JSON.parse(campo.tickSaude(new Date(9_000))[0].payload);
+      expect(saude).toMatchObject({
+        versaoFirmware: '2.5.0',
+        reinicios24h: 1,
+        uptimeS: 1,
+      });
+    });
+
+    it('versão com defeito de energia passa no autoteste, mas gasta mais', () => {
+      jest.spyOn(Math, 'random').mockReturnValue(0.5); // consumo sem ruído
+      const campo = new CampoEdge([poste('P-051')], '2.4.1', 5_000, 0, 8_000);
+      const antes = JSON.parse(campo.tickTelemetria()[0].payload).consumoKw;
+
+      const { topico, payload } = ota('P-051', '3.0.0');
+      campo.aplicarOta(topico, payload, 0);
+      const [r] = campo.tickOta(new Date(8_000));
+      const depois = JSON.parse(campo.tickTelemetria()[0].payload).consumoKw;
+
+      expect(JSON.parse(r.payload).sucesso).toBe(true);
+      expect(depois / antes).toBeCloseTo(1.8, 2);
+    });
+
+    it('versão que falha no autoteste volta sozinha para a anterior (A/B)', () => {
+      const campo = new CampoEdge([poste('P-052')], '2.4.1', 5_000, 0, 8_000);
+      const { topico, payload } = ota('P-052', '3.0.1');
+      campo.aplicarOta(topico, payload, 0);
+
+      const msg = JSON.parse(campo.tickOta(new Date(8_000))[0].payload);
+
+      expect(msg).toMatchObject({
+        versaoAlvo: '3.0.1',
+        versaoAtual: '2.4.1',
+        sucesso: false,
+      });
+      expect(msg.motivo).toContain('rollback automático para 2.4.1');
+    });
+
+    it('ignora OTA para poste fora do ar ou sem versão', () => {
+      const campo = new CampoEdge(
+        [poste('P-053', StatusPoste.FALHA_OFFLINE), poste('P-054')],
+        '2.4.1',
+        5_000,
+      );
+      const a = ota('P-053', '2.5.0');
+      expect(campo.aplicarOta(a.topico, a.payload)).toBeNull();
+      expect(
+        campo.aplicarOta('itaguari/iluminacao/centro/P-054/ota', '{}'),
+      ).toBeNull();
+    });
+  });
 });
