@@ -39,6 +39,12 @@ services:
       # embutido na API (modo original, reserva caso as camadas falhem).
       SIMULADOR_MODO: ${SIMULADOR_MODO:-camadas}
       MQTT_NUVEM_URL: mqtt://mosquitto-nuvem:1883
+      # OTA com grupo canário: ondas (% acumulado), janela de observação por onda
+      # e critérios de reversão (falha de instalação e consumo canário/controle).
+      OTA_ONDAS: ${OTA_ONDAS:-5,25,50,100}
+      OTA_JANELA_S: ${OTA_JANELA_S:-120}
+      OTA_LIMIAR_FALHA_PCT: ${OTA_LIMIAR_FALHA_PCT:-5}
+      OTA_LIMIAR_RAZAO_CONSUMO: ${OTA_LIMIAR_RAZAO_CONSUMO:-1.5}
       SIMULADOR_ENABLED: ${SIMULADOR_ENABLED:-true}
       SIMULADOR_INTERVALO_SENSORES_MS: ${SIMULADOR_INTERVALO_SENSORES_MS:-5000}
       SIMULADOR_INTERVALO_TELEMETRIA_MS: ${SIMULADOR_INTERVALO_TELEMETRIA_MS:-10000}
@@ -109,6 +115,7 @@ services:
       EDGE_INTERVALO_TELEMETRIA_MS: ${EDGE_INTERVALO_TELEMETRIA_MS:-10000}
       EDGE_INTERVALO_SAUDE_MS: ${EDGE_INTERVALO_SAUDE_MS:-30000}
       EDGE_INTERVALO_FALHAS_MS: ${EDGE_INTERVALO_FALHAS_MS:-30000}
+      EDGE_DURACAO_OTA_MS: ${EDGE_DURACAO_OTA_MS:-8000}
 
   # Broker MQTT da nuvem (uplink): gateways (fog) ↔ API. Separado do broker do
   # campo para que a queda da nuvem não afete a rede local (e para demonstrar o

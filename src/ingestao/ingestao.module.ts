@@ -11,5 +11,6 @@ import { IngestaoService } from './ingestao.service';
 @Module({
   controllers: [ArquiteturaController],
   providers: [IngestaoService, EstadoCamadasService],
+  exports: [IngestaoService],
 })
 export class IngestaoModule {}

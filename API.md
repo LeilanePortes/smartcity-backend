@@ -34,6 +34,10 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [`GET /kpis/postes-por-status`](#get-kpispostes-por-status)
 - **Arquitetura**
   - [`GET /arquitetura`](#get-arquitetura)
+- **OTA (firmware)**
+  - [`GET /ota`](#get-ota)
+  - [`POST /ota/implantacoes`](#post-otaimplantacoes)
+  - [`POST /ota/reverter`](#post-otareverter)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
 - [Notas do mock](#notas-do-mock)
@@ -611,6 +615,109 @@ fog (60 s); para a tela, basta consultar a cada 10–15 s.
 ```
 
 (`gateways` traz os 9 bairros; o exemplo mostra 2.)
+
+---
+
+## OTA (firmware)
+
+### `GET /ota`
+
+Atualização remota de firmware (OTA) com **grupo canário**: catálogo de versões,
+distribuição atual da frota e a implantação em andamento (ou a última).
+Requer `modo: "camadas"`. Para acompanhar, consulte a cada 5–10 s.
+
+**Resposta `200`:**
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `modo` | `"camadas"` \| `"interno"` | OTA só funciona em `camadas` |
+| `catalogo[]` | `{ versao, descricao }` | Versões disponíveis. `2.5.0` estável; `3.0.0` e `3.0.1` têm defeito proposital (para a demonstração) |
+| `versoesEmCampo` | `{ [versao]: number }` | Quantos postes rodam cada versão (último resumo do fog; `desconhecida` = sem reportar) |
+| `criterios` | object | Critérios escritos antes de começar: `ondas` (% acumulado), `janelaS` (observação por onda), `limiarFalhaInstalacaoPct`, `limiarRazaoConsumo`, `minReportePct`, `maxExtensoes` |
+| `implantacao` | object \| null | `null` se nenhuma foi iniciada desde que a API subiu |
+| `implantacao.versao` / `versaoAnterior` | string | Versão nova / versão predominante quando começou |
+| `implantacao.status` | `"EM_ANDAMENTO"` \| `"CONCLUIDA"` \| `"REVERTIDA"` | |
+| `implantacao.iniciadaEm` / `encerradaEm` | string (ISO) \| null | |
+| `implantacao.ondas` / `ondaAtual` / `ondaAtualPct` | number[] / number / number | Ex.: `[5,25,50,100]`, índice `1`, `25` |
+| `implantacao.proximaAvaliacaoEm` | string (ISO) \| null | Próximo portão de decisão |
+| `implantacao.aparelhos` | object | `elegiveis`, `enviados`, `instalados`, `falhas`, `pendentes`, `revertidos` |
+| `implantacao.grupos.canario` / `controle` | string[] | Códigos dos postes: quem já está na versão nova × amostra que segue na antiga |
+| `implantacao.metricas` | object \| null | Do último portão: `canario` e `controle` (`{ aparelhos, reportaram, consumoNormalizadoMedio, consumoAltoPct }`), `referenciaConsumo`, `razaoConsumo` |
+| `implantacao.falhas[]` | `{ codigo, motivo }` | Até 20 falhas de instalação |
+| `implantacao.decisoes[]` | array | Histórico dos portões: `{ em, ondaPct, decisao, motivo, razaoConsumo }`, `decisao` = `AVANCAR` \| `ESTENDER` \| `CONCLUIR` \| `REVERTER` |
+
+`consumoNormalizadoMedio` é o consumo em kW a 100% de luminosidade (independe de
+pico/piso); `razaoConsumo` = canário ÷ controle.
+
+```json
+{
+  "modo": "camadas",
+  "catalogo": [
+    { "versao": "2.4.1", "descricao": "Versão atualmente em campo (estável)." },
+    { "versao": "2.5.0", "descricao": "Ajustes no sensor 360° e na reconexão MQTT (estável)." },
+    { "versao": "3.0.0", "descricao": "Novo agrupamento de leituras para economizar banda — DEFEITO: ..." },
+    { "versao": "3.0.1", "descricao": "Build corrompido — DEFEITO: falha no autoteste ..." }
+  ],
+  "versoesEmCampo": { "2.4.1": 231, "3.0.0": 13, "desconhecida": 4 },
+  "criterios": {
+    "ondas": [5, 25, 50, 100],
+    "janelaS": 120,
+    "limiarFalhaInstalacaoPct": 5,
+    "limiarRazaoConsumo": 1.5,
+    "minReportePct": 60,
+    "maxExtensoes": 2
+  },
+  "implantacao": {
+    "versao": "3.0.0",
+    "versaoAnterior": "2.4.1",
+    "status": "REVERTIDA",
+    "iniciadaEm": "2026-10-18T18:43:21.000Z",
+    "encerradaEm": "2026-10-18T18:45:26.000Z",
+    "ondas": [5, 25, 50, 100],
+    "ondaAtual": 0,
+    "ondaAtualPct": 5,
+    "proximaAvaliacaoEm": null,
+    "aparelhos": { "elegiveis": 241, "enviados": 13, "instalados": 13, "falhas": 0, "pendentes": 0, "revertidos": 13 },
+    "grupos": { "canario": ["P-012", "P-087", "P-140"], "controle": ["P-069", "P-175", "P-153"] },
+    "metricas": {
+      "canario": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.1814, "consumoAltoPct": 100 },
+      "controle": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.0999, "consumoAltoPct": 0 },
+      "referenciaConsumo": 0.0999,
+      "razaoConsumo": 1.82
+    },
+    "falhas": [],
+    "decisoes": [
+      {
+        "em": "2026-10-18T18:45:26.000Z",
+        "ondaPct": 5,
+        "decisao": "REVERTER",
+        "motivo": "consumo do canário 1,82× o do grupo de controle (limite 1,50×)",
+        "razaoConsumo": 1.82
+      }
+    ]
+  }
+}
+```
+
+(`grupos` traz todos os códigos; o exemplo mostra 3 de cada.)
+
+### `POST /ota/implantacoes`
+
+Inicia a distribuição de uma versão. Começa pelo canário (primeira onda, só
+postes `NORMAL`, espalhados entre os bairros) e avança sozinha a cada portão.
+Postes em `MANUTENCAO` ou `FALHA_OFFLINE` ficam de fora.
+
+**Body:** `{ "versao": "2.5.0" }` (formato `X.Y.Z`).
+
+**Respostas:** `201` com o mesmo corpo de `GET /ota` · `400` versão inválida ou
+igual à atual · `409` já existe implantação em andamento, ou a API está no modo
+`interno`.
+
+### `POST /ota/reverter`
+
+Decisão manual da equipe: para a implantação em andamento e reenvia a versão
+anterior a quem instalou a nova. **Respostas:** `200` com o corpo de `GET /ota` ·
+`409` se não houver implantação em andamento.
 
 ---
 

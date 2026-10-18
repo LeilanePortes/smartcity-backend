@@ -10,6 +10,8 @@ import {
   MsgEdgeEstado,
   MsgFogEstado,
   MsgFogTrafego,
+  MsgOtaNuvem,
+  MsgOtaResultado,
   MsgSaude,
   MsgTelemetria,
   parseTopicoNuvem,
@@ -172,7 +174,9 @@ function iniciar(
       estadoFog(true, gateways.size, uplink.pendentes),
       { qos: 1, retain: true },
     );
-    nuvem.subscribe(assinaturaNuvem('comando'), { qos: 1 });
+    nuvem.subscribe([assinaturaNuvem('comando'), assinaturaNuvem('ota')], {
+      qos: 1,
+    });
     uplink.drenar();
   });
   nuvem.on('offline', () =>
@@ -193,6 +197,7 @@ function iniciar(
         assinaturaTodosPostes('telemetria'),
         assinaturaTodosPostes('evento'),
         assinaturaTodosPostes('saude'),
+        assinaturaTodosPostes('ota-resultado'),
         TOPICO_EDGE_ESTADO,
       ],
       { qos: 1 },
@@ -245,6 +250,15 @@ function iniciar(
     } else if (alvo.grandeza === 'saude') {
       const msg = lerJson<MsgSaude>(payload);
       if (msg) gateway.receberSaude(msg);
+    } else if (alvo.grandeza === 'ota-resultado') {
+      // Resultado de OTA sobe na hora: é ele que a nuvem usa para decidir as ondas.
+      const msg = lerJson<MsgOtaResultado>(payload);
+      if (msg) {
+        uplink.enviar({
+          topico: topicoNuvem(gateway.bairro, 'ota-resultado'),
+          payload: JSON.stringify(msg),
+        });
+      }
     }
   });
 
@@ -252,8 +266,23 @@ function iniciar(
   nuvem.on('message', (topico, payload) => {
     const alvo = parseTopicoNuvem(topico);
     const gateway = alvo && gateways.get(alvo.bairroSlug);
+    if (!alvo || !gateway) return;
+
+    if (alvo.grandeza === 'ota') {
+      const ota = lerJson<MsgOtaNuvem>(payload);
+      const destino = ota && gateway.topicoNoCampo(ota.codigo, 'ota');
+      if (!ota || !destino) return;
+      campo.publish(
+        destino,
+        JSON.stringify({ versao: ota.versao, em: ota.em }),
+        { qos: 1 },
+      );
+      log(`OTA repassada ao campo: ${ota.codigo} → ${ota.versao}`);
+      return;
+    }
+
     const msg = lerJson<MsgComandoNuvem>(payload);
-    if (!alvo || alvo.grandeza !== 'comando' || !gateway || !msg) return;
+    if (alvo.grandeza !== 'comando' || !msg) return;
     if (
       msg.status !== StatusPoste.MANUTENCAO &&
       msg.status !== StatusPoste.NORMAL

@@ -12,6 +12,7 @@ import { AgregadosModule } from './agregados/agregados.module';
 import { SimuladorModule } from './simulador/simulador.module';
 import { TempoRealModule } from './tempo-real/tempo-real.module';
 import { IngestaoModule } from './ingestao/ingestao.module';
+import { OtaModule } from './ota/ota.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { IngestaoModule } from './ingestao/ingestao.module';
     SimuladorModule,
     TempoRealModule,
     IngestaoModule,
+    OtaModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,8 +1,11 @@
 import { StatusPoste } from '@prisma/client';
+import { perfilFirmware } from '../common/firmware';
 import type { PosteProvisionado } from '../common/provisionamento';
 import {
   MsgComando,
   MsgEvento,
+  MsgOta,
+  MsgOtaResultado,
   MsgSaude,
   MsgTelemetria,
   parseTopicoPoste,
@@ -31,7 +34,14 @@ interface Dispositivo {
   estado: EstadoPoste;
   bairro: string;
   ligadoEmMs: number;
+  versaoFirmware: string;
+  reinicios: number;
+  /// OTA em andamento: o aparelho está reiniciando e não publica nada.
+  instalacao: { versaoAlvo: string; ateMs: number } | null;
 }
+
+/// Tempo que o aparelho leva para gravar a versão nova e reiniciar.
+export const DURACAO_OTA_PADRAO_MS = 8_000;
 
 const entre = (min: number, max: number): number =>
   min + Math.random() * (max - min);
@@ -46,6 +56,11 @@ const entre = (min: number, max: number): number =>
  * As "falhas físicas" reaproveitam o motor do simulador: um driver degradado
  * gasta mais (CONSUMO_ALTO) e um poste em falha simplesmente para de publicar
  * (FALHA_OFFLINE), que é como um aparelho real some da rede.
+ *
+ * OTA: cada poste roda uma versão de firmware. Ao receber uma ordem de
+ * atualização ele grava a versão nova, reinicia (fica mudo alguns segundos) e
+ * faz o autoteste; se falhar, volta sozinho para a anterior (partições A/B).
+ * O perfil da versão (ex.: gastar mais energia) passa a valer na operação.
  */
 export class CampoEdge {
   private readonly dispositivos = new Map<string, Dispositivo>();
@@ -54,9 +69,10 @@ export class CampoEdge {
 
   constructor(
     postes: PosteProvisionado[],
-    private readonly versaoFirmware: string,
+    versaoFirmware: string,
     intervaloSensoresMs: number,
     agoraMs = Date.now(),
+    private readonly duracaoOtaMs = DURACAO_OTA_PADRAO_MS,
   ) {
     this.probDeteccao = probDeteccaoPorTick(intervaloSensoresMs);
     for (const p of postes) {
@@ -64,6 +80,9 @@ export class CampoEdge {
         estado: estadoInicial(p),
         bairro: p.bairro,
         ligadoEmMs: agoraMs,
+        versaoFirmware,
+        reinicios: 0,
+        instalacao: null,
       };
       this.dispositivos.set(p.id, d);
       this.porCodigo.set(p.codigo, d);
@@ -87,6 +106,7 @@ export class CampoEdge {
   tickSensores(agora = new Date()): Publicacao[] {
     const saida: Publicacao[] = [];
     for (const d of this.dispositivos.values()) {
+      if (d.instalacao) continue; // reiniciando
       const evento = passoSensor(d.estado, agora, this.probDeteccao);
       if (!evento) continue;
       const msg: MsgEvento = {
@@ -106,12 +126,20 @@ export class CampoEdge {
   tickTelemetria(agora = new Date()): Publicacao[] {
     const saida: Publicacao[] = [];
     for (const d of this.dispositivos.values()) {
+      if (d.instalacao) continue; // reiniciando
       const leitura = gerarLeitura(d.estado, agora);
       if (!leitura) continue; // poste em falha não publica
+      // O firmware também pesa no consumo (ex.: rádio ligado por mais tempo).
+      const consumoKw = Number(
+        (
+          leitura.consumoKw * perfilFirmware(d.versaoFirmware).fatorConsumo
+        ).toFixed(4),
+      );
+      d.estado.consumoKw = consumoKw;
       const msg: MsgTelemetria = {
         posteId: d.estado.id,
         codigo: d.estado.codigo,
-        consumoKw: leitura.consumoKw,
+        consumoKw,
         luminosidadePct: leitura.luminosidadePct,
         em: agora.toISOString(),
       };
@@ -124,13 +152,15 @@ export class CampoEdge {
   tickSaude(agora = new Date()): Publicacao[] {
     const saida: Publicacao[] = [];
     for (const d of this.dispositivos.values()) {
-      if (d.estado.status === StatusPoste.FALHA_OFFLINE) continue;
+      if (d.estado.status === StatusPoste.FALHA_OFFLINE || d.instalacao) {
+        continue;
+      }
       const msg: MsgSaude = {
         posteId: d.estado.id,
         codigo: d.estado.codigo,
-        versaoFirmware: this.versaoFirmware,
+        versaoFirmware: d.versaoFirmware,
         uptimeS: Math.floor((agora.getTime() - d.ligadoEmMs) / 1000),
-        reinicios24h: 0,
+        reinicios24h: d.reinicios,
         rssiDbm: Math.round(entre(-85, -60)),
         memoriaLivreKb: Math.round(entre(170, 190)),
         em: agora.toISOString(),
@@ -185,9 +215,72 @@ export class CampoEdge {
     return d.estado.codigo;
   }
 
+  /**
+   * Ordem de OTA vinda do fog. O aparelho começa a instalar e fica mudo até
+   * `tickOta` concluir. Devolve o código do poste, ou null se a ordem foi
+   * ignorada (mensagem inválida, poste fora do ar ou já instalando).
+   */
+  aplicarOta(
+    topico: string,
+    payload: string,
+    agoraMs = Date.now(),
+  ): string | null {
+    const alvo = parseTopicoPoste(topico);
+    if (!alvo || alvo.grandeza !== 'ota') return null;
+    const d = this.porCodigo.get(alvo.codigo);
+    if (!d || d.instalacao) return null;
+    if (d.estado.status === StatusPoste.FALHA_OFFLINE) return null;
+
+    let msg: Partial<MsgOta>;
+    try {
+      msg = JSON.parse(payload) as Partial<MsgOta>;
+    } catch {
+      return null;
+    }
+    if (typeof msg.versao !== 'string' || !msg.versao) return null;
+
+    d.instalacao = {
+      versaoAlvo: msg.versao,
+      ateMs: agoraMs + this.duracaoOtaMs,
+    };
+    return d.estado.codigo;
+  }
+
+  /** Conclui as instalações cujo reinício terminou e publica o resultado. */
+  tickOta(agora = new Date()): Publicacao[] {
+    const saida: Publicacao[] = [];
+    const agoraMs = agora.getTime();
+    for (const d of this.dispositivos.values()) {
+      if (!d.instalacao || agoraMs < d.instalacao.ateMs) continue;
+
+      const { versaoAlvo } = d.instalacao;
+      const anterior = d.versaoFirmware;
+      const falhou = perfilFirmware(versaoAlvo).falhaAutoteste;
+      d.instalacao = null;
+      d.ligadoEmMs = agoraMs;
+      // Com rollback o aparelho reinicia duas vezes: na nova e de volta na anterior.
+      d.reinicios += falhou ? 2 : 1;
+      if (!falhou) d.versaoFirmware = versaoAlvo;
+
+      const msg: MsgOtaResultado = {
+        posteId: d.estado.id,
+        codigo: d.estado.codigo,
+        versaoAlvo,
+        versaoAtual: d.versaoFirmware,
+        sucesso: !falhou,
+        motivo: falhou
+          ? `autoteste falhou após o reinício — rollback automático para ${anterior} (partição A/B)`
+          : 'instalada e confirmada no autoteste',
+        em: agora.toISOString(),
+      };
+      saida.push(this.publicacao(d, 'ota-resultado', msg, 1));
+    }
+    return saida;
+  }
+
   private publicacao(
     d: Dispositivo,
-    grandeza: 'telemetria' | 'evento' | 'saude',
+    grandeza: 'telemetria' | 'evento' | 'saude' | 'ota-resultado',
     msg: object,
     qos: 0 | 1,
   ): Publicacao {

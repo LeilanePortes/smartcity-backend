@@ -26,6 +26,7 @@ async function bootstrap() {
     .addTag('Postes', 'Mapa, detalhe, histórico e status dos postes')
     .addTag('KPIs', 'Indicadores agregados do dashboard')
     .addTag('Arquitetura', 'Estado das camadas edge · fog · nuvem')
+    .addTag('OTA', 'Atualização remota de firmware com grupo canário')
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, config), {
     jsonDocumentUrl: 'docs-json',

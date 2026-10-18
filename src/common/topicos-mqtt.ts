@@ -4,8 +4,9 @@ import { SentidoVeiculo, StatusPoste, TipoEventoSensor } from '@prisma/client';
 /// (ex.: itaguari/iluminacao/centro/P-042/telemetria).
 export const RAIZ_TOPICOS = 'itaguari/iluminacao';
 
-/// Grandezas publicadas por um poste (edge) ou enviadas a ele (comando).
-export type GrandezaPoste = 'telemetria' | 'evento' | 'saude' | 'comando';
+/// Grandezas publicadas por um poste (edge) ou enviadas a ele (comando, ota).
+export type GrandezaPoste =
+  'telemetria' | 'evento' | 'saude' | 'comando' | 'ota' | 'ota-resultado';
 
 /// Assina uma grandeza de todos os postes de todos os bairros.
 export const assinaturaTodosPostes = (grandeza: GrandezaPoste): string =>
@@ -44,6 +45,8 @@ const GRANDEZAS: ReadonlySet<string> = new Set<GrandezaPoste>([
   'evento',
   'saude',
   'comando',
+  'ota',
+  'ota-resultado',
 ]);
 
 /** Inverso de `topicoPoste`; null se o tópico não for de um poste. */
@@ -110,7 +113,8 @@ export interface MsgEdgeEstado {
 
 export const RAIZ_NUVEM = 'itaguari/nuvem';
 
-export type GrandezaNuvem = 'resumo' | 'evento' | 'alerta' | 'comando';
+export type GrandezaNuvem =
+  'resumo' | 'evento' | 'alerta' | 'comando' | 'ota' | 'ota-resultado';
 
 /// Tópico de presença dos gateways fog (Last Will do MQTT).
 export const TOPICO_FOG_ESTADO = `${RAIZ_NUVEM}/_fog/estado`;
@@ -127,6 +131,8 @@ const GRANDEZAS_NUVEM: ReadonlySet<string> = new Set<GrandezaNuvem>([
   'evento',
   'alerta',
   'comando',
+  'ota',
+  'ota-resultado',
 ]);
 
 /** Inverso de `topicoNuvem`; null se o tópico não for de um gateway. */
@@ -219,5 +225,34 @@ export interface MsgFogTrafego {
   gateways: Array<{ bairro: string; postes: number; online: number }>;
   /// Presença do simulador de campo, vista pelo fog (null = ainda não informou).
   edgeOnline: boolean | null;
+  em: string;
+}
+
+// --- OTA (atualização remota de firmware) ---------------------------------
+// nuvem → fog: itaguari/nuvem/<bairro>/ota          { codigo, versao }
+// fog → edge:  itaguari/iluminacao/<bairro>/<poste>/ota            { versao }
+// edge → fog:  itaguari/iluminacao/<bairro>/<poste>/ota-resultado  MsgOtaResultado
+// fog → nuvem: itaguari/nuvem/<bairro>/ota-resultado               MsgOtaResultado
+
+/// Ordem de atualização para um poste.
+export interface MsgOta {
+  versao: string;
+  em: string;
+}
+
+/// Ordem de atualização enviada pela nuvem; o fog repassa ao poste.
+export interface MsgOtaNuvem extends MsgOta {
+  codigo: string;
+}
+
+/// Resultado da instalação, informado pelo poste após reiniciar.
+export interface MsgOtaResultado {
+  posteId: string;
+  codigo: string;
+  versaoAlvo: string;
+  /// Versão que ficou rodando (a anterior, se houve rollback).
+  versaoAtual: string;
+  sucesso: boolean;
+  motivo: string;
   em: string;
 }

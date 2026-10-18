@@ -290,6 +290,47 @@ vêm `null` e `alertas` vazio.
 
 ---
 
+## OTA (firmware)
+
+### `GET /ota` · `POST /ota/implantacoes` · `POST /ota/reverter`
+
+Atualização remota de firmware com grupo canário (só no modo `camadas`).
+Detalhes de cada campo no `API.md`.
+
+```jsonc
+// POST /ota/implantacoes   body: { "versao": "3.0.0" }   → 201 (mesmo corpo do GET)
+// POST /ota/reverter       → 200 (409 se não houver implantação em andamento)
+// GET /ota
+{
+  "modo": "camadas",
+  "catalogo": [ { "versao": "2.5.0", "descricao": "..." } ],   // 2.4.1, 2.5.0, 3.0.0 (defeito de energia), 3.0.1 (falha no autoteste)
+  "versoesEmCampo": { "2.4.1": 231, "3.0.0": 13, "desconhecida": 4 },
+  "criterios": { "ondas": [5, 25, 50, 100], "janelaS": 120, "limiarFalhaInstalacaoPct": 5,
+                 "limiarRazaoConsumo": 1.5, "minReportePct": 60, "maxExtensoes": 2 },
+  "implantacao": {                          // null se nenhuma foi iniciada
+    "versao": "3.0.0", "versaoAnterior": "2.4.1",
+    "status": "REVERTIDA",                  // EM_ANDAMENTO | CONCLUIDA | REVERTIDA
+    "iniciadaEm": "2026-10-18T18:43:21.000Z", "encerradaEm": "2026-10-18T18:45:26.000Z",
+    "ondas": [5, 25, 50, 100], "ondaAtual": 0, "ondaAtualPct": 5,
+    "proximaAvaliacaoEm": null,
+    "aparelhos": { "elegiveis": 241, "enviados": 13, "instalados": 13, "falhas": 0, "pendentes": 0, "revertidos": 13 },
+    "grupos": { "canario": ["P-012", "..."], "controle": ["P-069", "..."] },
+    "metricas": {                           // null até o 1º portão
+      "canario":  { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.1814, "consumoAltoPct": 100 },
+      "controle": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.0999, "consumoAltoPct": 0 },
+      "referenciaConsumo": 0.0999, "razaoConsumo": 1.82
+    },
+    "falhas": [],                           // { codigo, motivo }, até 20
+    "decisoes": [                           // um por portão
+      { "em": "2026-10-18T18:45:26.000Z", "ondaPct": 5, "decisao": "REVERTER",   // AVANCAR | ESTENDER | CONCLUIR | REVERTER
+        "motivo": "consumo do canário 1,82× o do grupo de controle (limite 1,50×)", "razaoConsumo": 1.82 }
+    ]
+  }
+}
+```
+
+---
+
 ## WebSocket — `ws://localhost:3000/tempo-real`
 
 Socket.IO, namespace `/tempo-real`. Sem autenticação. As atualizações ao vivo

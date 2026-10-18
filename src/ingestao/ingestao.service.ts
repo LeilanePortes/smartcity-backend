@@ -15,6 +15,7 @@ import {
   MsgEventoNuvem,
   MsgFogEstado,
   MsgFogTrafego,
+  MsgOtaResultado,
   MsgResumo,
   parseTopicoNuvem,
   TOPICO_FOG_ESTADO,
@@ -30,6 +31,10 @@ import {
   SnapshotPoste,
 } from '../simulador/simulador.events';
 import { EstadoCamadasService } from './estado-camadas.service';
+import {
+  EVENTO_NUVEM_OTA_RESULTADO,
+  EVENTO_NUVEM_RESUMO,
+} from './ingestao.events';
 import {
   AtualizacaoPoste,
   planejarAlerta,
@@ -102,6 +107,7 @@ export class IngestaoService implements OnModuleInit, OnModuleDestroy {
           assinaturaNuvem('resumo'),
           assinaturaNuvem('evento'),
           assinaturaNuvem('alerta'),
+          assinaturaNuvem('ota-resultado'),
           TOPICO_FOG_ESTADO,
           TOPICO_FOG_TRAFEGO,
         ],
@@ -128,6 +134,16 @@ export class IngestaoService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy(): void {
     this.cliente?.end(true);
+  }
+
+  /**
+   * Publica no broker da nuvem (usado pelo OTA). QoS 1: se o broker estiver
+   * fora, o cliente guarda e envia ao reconectar. false se fora do modo camadas.
+   */
+  publicar(topico: string, payload: object): boolean {
+    if (!this.cliente) return false;
+    this.cliente.publish(topico, JSON.stringify(payload), { qos: 1 });
+    return true;
   }
 
   /** Manutenção marcada pelo técnico → comando para o poste, via fog. */
@@ -181,10 +197,16 @@ export class IngestaoService implements OnModuleInit, OnModuleDestroy {
       await this.aoEvento(msg as MsgEventoNuvem);
     } else if (alvo.grandeza === 'alerta') {
       await this.aoAlerta(msg as MsgAlerta);
+    } else if (alvo.grandeza === 'ota-resultado') {
+      this.eventEmitter.emit(
+        EVENTO_NUVEM_OTA_RESULTADO,
+        msg as MsgOtaResultado,
+      );
     }
   }
 
   private async aoResumo(msg: MsgResumo): Promise<void> {
+    this.eventEmitter.emit(EVENTO_NUVEM_RESUMO, msg);
     const plano = planejarResumo(msg);
 
     // `atualizar` ignora postes que a nuvem não conhece (ex.: fog provisionado
