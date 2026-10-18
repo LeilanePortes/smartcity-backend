@@ -56,5 +56,55 @@ services:
       retries: 5
       start_period: 300s
 
+  # Broker MQTT: liga as camadas edge (postes) → fog (gateways) → nuvem (API).
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: smartcity-mosquitto
+    restart: unless-stopped
+    ports:
+      - '1883:1883'
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'mosquitto_sub',
+          '-h',
+          'localhost',
+          '-t',
+          '$$SYS/broker/uptime',
+          '-C',
+          '1',
+          '-W',
+          '3',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Camada edge: os 248 postes simulados como dispositivos MQTT. Usa a mesma
+  # imagem da API com outro comando (e sem o entrypoint que prepara o banco).
+  edge:
+    build: .
+    container_name: smartcity-edge
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    entrypoint: []
+    command: ['bun', 'run', 'dist/edge/main.js']
+    environment:
+      MQTT_URL: mqtt://mosquitto:1883
+      # Provisionamento: o campo pergunta à nuvem quais postes existem.
+      EDGE_API_URL: http://app:3000
+      EDGE_VERSAO_FIRMWARE: ${EDGE_VERSAO_FIRMWARE:-2.4.1}
+      EDGE_INTERVALO_SENSORES_MS: ${EDGE_INTERVALO_SENSORES_MS:-5000}
+      EDGE_INTERVALO_TELEMETRIA_MS: ${EDGE_INTERVALO_TELEMETRIA_MS:-10000}
+      EDGE_INTERVALO_SAUDE_MS: ${EDGE_INTERVALO_SAUDE_MS:-30000}
+      EDGE_INTERVALO_FALHAS_MS: ${EDGE_INTERVALO_FALHAS_MS:-30000}
+
 volumes:
   smartcity-pgdata:

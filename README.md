@@ -20,7 +20,8 @@ e [`roadmap-backend-nestjs.md`](./roadmap-backend-nestjs.md).
 
 ## Rodar tudo com Docker
 
-Sobe **banco + API + simulador** de uma vez. Na primeira subida o container
+Sobe **banco + API + simulador + broker MQTT + camada edge** de uma vez (ver
+[Camadas edge · fog · nuvem](#camadas-edge--fog--nuvem-mqtt)). Na primeira subida o container
 aplica as migrations, roda o seed dos 248 postes e gera o histórico (backfill)
 automaticamente — isso leva alguns minutos; nas próximas ele detecta o banco já
 populado e vai direto para a API.
@@ -225,6 +226,50 @@ estado inicial e as mudanças manuais de status.
 
 Os snapshots de delta trazem `posteId`, `codigo`, `status`, `luminosidadeAtual`,
 `consumoInstantaneoKw` e `ultimaLeituraEm`.
+
+## Camadas edge · fog · nuvem (MQTT)
+
+A rede está sendo separada nas três camadas de uma arquitetura IoT, ligadas por
+um broker **MQTT** (Mosquitto, porta `1883`):
+
+| Camada | Serviço | Papel |
+|---|---|---|
+| **Edge** | `edge` | Os 248 controladores de poste. Cada um decide a luminosidade **localmente** (sensor 360° → pico 100%, veículo se afasta → piso 50%), sem depender da rede, e publica o que mediu. |
+| **Fog** | *(próxima etapa)* | Gateway por bairro: diagnostica status, agrega e sobe só resumos e alertas. |
+| **Nuvem** | `app` | API, histórico, KPIs e tempo real para o app. |
+
+Por enquanto a nuvem ainda usa o simulador interno; o edge publica em paralelo.
+
+**Tópicos** — padrão `organização/área/dispositivo/grandeza`
+([`src/common/topicos-mqtt.ts`](./src/common/topicos-mqtt.ts)):
+
+| Tópico | Sentido | QoS | Quando |
+|---|---|---|---|
+| `itaguari/iluminacao/<bairro>/<poste>/telemetria` | edge → | 0 | a cada 10 s: `consumoKw`, `luminosidadePct` |
+| `itaguari/iluminacao/<bairro>/<poste>/evento` | edge → | 1 | na hora: `VEICULO_DETECTADO` / `RETORNO_AO_PISO` |
+| `itaguari/iluminacao/<bairro>/<poste>/saude` | edge → | 0 | a cada 30 s: `versaoFirmware`, `uptimeS`, `rssiDbm`, `memoriaLivreKb` |
+| `itaguari/iluminacao/<bairro>/<poste>/comando` | → edge | 1 | `{ "status": "MANUTENCAO" \| "NORMAL" }` |
+| `itaguari/iluminacao/_edge/estado` | edge → | 1 (retido) | presença do campo; *Last Will* publica `online: false` se ele cair |
+
+O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`).
+
+**Como o edge simula o campo** ([`src/edge/`](./src/edge/)):
+
+- **Provisionamento:** ao subir, pergunta à nuvem quais postes existem (`GET /postes`).
+- **Falhas físicas:** o edge não declara status. Um driver degradado passa a gastar
+  mais, e um poste em falha simplesmente **para de publicar** — é a ausência de
+  telemetria que caracteriza o offline, como num aparelho real.
+- **Banda:** a cada minuto o log mostra quantas mensagens e bytes o campo publicou
+  (ordem de 1.600 mensagens/min para 248 postes).
+
+Acompanhar o tráfego e enviar um comando:
+
+```bash
+docker compose logs -f edge
+docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/iluminacao/#' -v
+docker exec smartcity-mosquitto mosquitto_pub -q 1 \
+  -t 'itaguari/iluminacao/centro/P-001/comando' -m '{"status":"MANUTENCAO"}'
+```
 
 ## Documentação (Fase 6)
 
