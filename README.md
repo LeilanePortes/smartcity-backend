@@ -20,7 +20,7 @@ e [`roadmap-backend-nestjs.md`](./roadmap-backend-nestjs.md).
 
 ## Rodar tudo com Docker
 
-Sobe **banco + API + simulador + broker MQTT + camada edge** de uma vez (ver
+Sobe **banco + API + simulador + brokers MQTT + camadas edge e fog** de uma vez (ver
 [Camadas edge · fog · nuvem](#camadas-edge--fog--nuvem-mqtt)). Na primeira subida o container
 aplica as migrations, roda o seed dos 248 postes e gera o histórico (backfill)
 automaticamente — isso leva alguns minutos; nas próximas ele detecta o banco já
@@ -230,15 +230,25 @@ Os snapshots de delta trazem `posteId`, `codigo`, `status`, `luminosidadeAtual`,
 ## Camadas edge · fog · nuvem (MQTT)
 
 A rede está sendo separada nas três camadas de uma arquitetura IoT, ligadas por
-um broker **MQTT** (Mosquitto, porta `1883`):
+**dois brokers MQTT** (Mosquitto): o do **campo** (`mosquitto`, porta `1883`),
+entre postes e gateways, e o da **nuvem** (`mosquitto-nuvem`, porta `1884`),
+entre gateways e API. Assim a queda da nuvem não afeta a rede local.
+
+```
+edge (248 postes) ──1883──► fog (9 gateways) ──1884──► nuvem (API)
+   telemetria/10 s             diagnóstico              histórico, KPIs, app
+   eventos na hora             resumo/min + alertas
+   ◄────────── comandos ◄──────────── comandos ◄──────────
+```
 
 | Camada | Serviço | Papel |
 |---|---|---|
 | **Edge** | `edge` | Os 248 controladores de poste. Cada um decide a luminosidade **localmente** (sensor 360° → pico 100%, veículo se afasta → piso 50%), sem depender da rede, e publica o que mediu. |
-| **Fog** | *(próxima etapa)* | Gateway por bairro: diagnostica status, agrega e sobe só resumos e alertas. |
+| **Fog** | `fog` | Um gateway por bairro: diagnostica o status dos postes, agrega a telemetria e sobe para a nuvem só resumos, eventos e alertas. |
 | **Nuvem** | `app` | API, histórico, KPIs e tempo real para o app. |
 
-Por enquanto a nuvem ainda usa o simulador interno; o edge publica em paralelo.
+Por enquanto a nuvem ainda usa o simulador interno; edge e fog funcionam em
+paralelo, e a API passa a consumir o fog na próxima etapa.
 
 **Tópicos** — padrão `organização/área/dispositivo/grandeza`
 ([`src/common/topicos-mqtt.ts`](./src/common/topicos-mqtt.ts)):
@@ -250,6 +260,11 @@ Por enquanto a nuvem ainda usa o simulador interno; o edge publica em paralelo.
 | `itaguari/iluminacao/<bairro>/<poste>/saude` | edge → | 0 | a cada 30 s: `versaoFirmware`, `uptimeS`, `rssiDbm`, `memoriaLivreKb` |
 | `itaguari/iluminacao/<bairro>/<poste>/comando` | → edge | 1 | `{ "status": "MANUTENCAO" \| "NORMAL" }` |
 | `itaguari/iluminacao/_edge/estado` | edge → | 1 (retido) | presença do campo; *Last Will* publica `online: false` se ele cair |
+| `itaguari/nuvem/<bairro>/resumo` | fog → nuvem | 1 | a cada minuto: por poste, status, média de consumo/luminosidade, energia (kWh), versão de firmware |
+| `itaguari/nuvem/<bairro>/evento` | fog → nuvem | 1 | na hora: evento do sensor repassado com o bairro |
+| `itaguari/nuvem/<bairro>/alerta` | fog → nuvem | 1 | na hora: mudança de status diagnosticada (`statusAnterior`, `status`, `motivo`) |
+| `itaguari/nuvem/<bairro>/comando` | nuvem → fog | 1 | `{ "codigo": "P-042", "status": "MANUTENCAO" \| "NORMAL" }` — repassado ao poste |
+| `itaguari/nuvem/_fog/estado` | fog → nuvem | 1 (retido) | presença dos gateways (*Last Will*) e tamanho do buffer |
 
 O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`).
 
@@ -262,13 +277,34 @@ O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`)
 - **Banda:** a cada minuto o log mostra quantas mensagens e bytes o campo publicou
   (ordem de 1.600 mensagens/min para 248 postes).
 
-Acompanhar o tráfego e enviar um comando:
+**Regras do fog** ([`src/fog/gateway.ts`](./src/fog/gateway.ts)), configuráveis por `FOG_*`:
+
+| Regra | Como funciona |
+|---|---|
+| `CONSUMO_ALTO` | Consumo **normalizado pela luminosidade** (kW a 100% de brilho, média das 3 últimas leituras) acima de **1,5×** a **mediana** do bairro; volta a `NORMAL` abaixo de 1,3× (histerese). Normalizar evita acusar um poste que só está no pico porque passou um carro; a mediana evita que os defeituosos puxem a referência. |
+| `FALHA_OFFLINE` | Nenhuma telemetria por **30 s** (3 leituras perdidas); volta a `NORMAL` quando o poste reaparece. |
+| `MANUTENCAO` | Só muda por comando do técnico; o fog não sobrescreve. |
+
+- **Agregação:** a telemetria (uma leitura por poste a cada 10 s) vira **um resumo
+  por bairro por minuto**. Eventos e alertas sobem na hora, para o mapa seguir ao vivo.
+- **Buffer (store-and-forward):** se o broker da nuvem cair, o fog guarda o que
+  iria subir e envia em ordem quando a conexão volta.
+- **Banda:** a cada janela o log compara o que entrou do campo com o que subiu —
+  na prática, **~88% menos mensagens e ~55% menos bytes**.
+
+Acompanhar o tráfego, enviar um comando e testar o buffer:
 
 ```bash
-docker compose logs -f edge
-docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/iluminacao/#' -v
-docker exec smartcity-mosquitto mosquitto_pub -q 1 \
-  -t 'itaguari/iluminacao/centro/P-001/comando' -m '{"status":"MANUTENCAO"}'
+docker compose logs -f edge fog
+docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/iluminacao/#' -v   # campo
+docker exec smartcity-mosquitto-nuvem mosquitto_sub -t 'itaguari/nuvem/#' -v  # nuvem
+
+# comando do técnico: nuvem → fog → poste
+docker exec smartcity-mosquitto-nuvem mosquitto_pub -q 1 \
+  -t 'itaguari/nuvem/centro/comando' -m '{"codigo":"P-001","status":"MANUTENCAO"}'
+
+# queda da nuvem: o fog guarda e reenvia ao voltar
+docker compose stop mosquitto-nuvem; sleep 30; docker compose start mosquitto-nuvem
 ```
 
 ## Documentação (Fase 6)

@@ -4,7 +4,8 @@ import {
   MsgEdgeEstado,
   TOPICO_EDGE_ESTADO,
 } from '../common/topicos-mqtt';
-import { CampoEdge, PosteProvisionado, Publicacao } from './campo';
+import { provisionar } from '../common/provisionamento';
+import { CampoEdge, Publicacao } from './campo';
 import { EdgeConfig, lerEdgeConfig } from './edge.config';
 
 /**
@@ -52,39 +53,6 @@ class Contador {
     this.bytes = 0;
     this.descartadas = 0;
     return resumo;
-  }
-}
-
-const esperar = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * Provisionamento: o campo pergunta à nuvem quais postes existem. Repete até a
- * API responder (no compose, ela pode ainda estar populando o banco).
- */
-async function provisionar(apiUrl: string): Promise<PosteProvisionado[]> {
-  for (let tentativa = 1; ; tentativa++) {
-    try {
-      const resp = await fetch(`${apiUrl}/postes`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const corpo = (await resp.json()) as {
-        postes: Array<
-          Omit<PosteProvisionado, 'ultimaLeituraEm'> & {
-            ultimaLeituraEm: string | null;
-          }
-        >;
-      };
-      return corpo.postes.map((p) => ({
-        ...p,
-        ultimaLeituraEm: p.ultimaLeituraEm ? new Date(p.ultimaLeituraEm) : null,
-      }));
-    } catch (erro) {
-      log(
-        `provisionamento: API indisponível em ${apiUrl} (${(erro as Error).message}), ` +
-          `nova tentativa em 5 s [${tentativa}]`,
-      );
-      await esperar(5_000);
-    }
   }
 }
 
@@ -191,7 +159,7 @@ function iniciar(config: EdgeConfig, campo: CampoEdge): void {
 async function main(): Promise<void> {
   const config = lerEdgeConfig();
   log(`provisionando postes a partir de ${config.apiUrl}...`);
-  const postes = await provisionar(config.apiUrl);
+  const postes = await provisionar(config.apiUrl, log);
   const campo = new CampoEdge(
     postes,
     config.versaoFirmware,
