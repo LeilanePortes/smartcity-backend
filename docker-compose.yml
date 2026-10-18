@@ -35,6 +35,10 @@ services:
       # agregados diários). Reduza para uma primeira subida mais rápida.
       DIAS_RAW: ${DIAS_RAW:-30}
       DIAS_AGREGADO: ${DIAS_AGREGADO:-740}
+      # camadas = dados vindos do fog (edge → fog → nuvem); interno = simulador
+      # embutido na API (modo original, reserva caso as camadas falhem).
+      SIMULADOR_MODO: ${SIMULADOR_MODO:-camadas}
+      MQTT_NUVEM_URL: mqtt://mosquitto-nuvem:1883
       SIMULADOR_ENABLED: ${SIMULADOR_ENABLED:-true}
       SIMULADOR_INTERVALO_SENSORES_MS: ${SIMULADOR_INTERVALO_SENSORES_MS:-5000}
       SIMULADOR_INTERVALO_TELEMETRIA_MS: ${SIMULADOR_INTERVALO_TELEMETRIA_MS:-10000}

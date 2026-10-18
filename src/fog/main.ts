@@ -7,13 +7,17 @@ import {
   MsgAlerta,
   MsgComandoNuvem,
   MsgEvento,
+  MsgEdgeEstado,
   MsgFogEstado,
+  MsgFogTrafego,
   MsgSaude,
   MsgTelemetria,
   parseTopicoNuvem,
   parseTopicoPoste,
   slugBairro,
+  TOPICO_EDGE_ESTADO,
   TOPICO_FOG_ESTADO,
+  TOPICO_FOG_TRAFEGO,
   topicoNuvem,
 } from '../common/topicos-mqtt';
 import { FogConfig, lerFogConfig } from './fog.config';
@@ -43,17 +47,31 @@ class Trafego {
   saidaMsgs = 0;
   saidaBytes = 0;
 
-  fecharJanela(buffer: number): string {
-    const pct = (saida: number, entrada: number): string =>
-      entrada ? `-${Math.round((1 - saida / entrada) * 100)}%` : '—';
+  /** Fecha a janela: devolve os números (para a nuvem) e o texto (para o log). */
+  fecharJanela(buffer: number): {
+    numeros: Pick<
+      MsgFogTrafego,
+      'entrada' | 'saida' | 'reducaoMsgsPct' | 'reducaoBytesPct'
+    >;
+    texto: string;
+  } {
+    const reducao = (saida: number, entrada: number): number | null =>
+      entrada ? Math.round((1 - saida / entrada) * 100) : null;
+    const pct = (r: number | null): string => (r === null ? '—' : `-${r}%`);
     const kb = (b: number): string => `${(b / 1024).toFixed(1)} KB`;
+    const numeros = {
+      entrada: { msgs: this.entradaMsgs, bytes: this.entradaBytes },
+      saida: { msgs: this.saidaMsgs, bytes: this.saidaBytes },
+      reducaoMsgsPct: reducao(this.saidaMsgs, this.entradaMsgs),
+      reducaoBytesPct: reducao(this.saidaBytes, this.entradaBytes),
+    };
     const texto =
       `campo → fog: ${this.entradaMsgs} msgs (${kb(this.entradaBytes)}) | ` +
       `fog → nuvem: ${this.saidaMsgs} msgs (${kb(this.saidaBytes)}) | ` +
-      `redução ${pct(this.saidaMsgs, this.entradaMsgs)} msgs, ` +
-      `${pct(this.saidaBytes, this.entradaBytes)} bytes · buffer ${buffer}`;
+      `redução ${pct(numeros.reducaoMsgsPct)} msgs, ` +
+      `${pct(numeros.reducaoBytesPct)} bytes · buffer ${buffer}`;
     this.entradaMsgs = this.entradaBytes = this.saidaMsgs = this.saidaBytes = 0;
-    return texto;
+    return { numeros, texto };
   }
 }
 
@@ -175,6 +193,7 @@ function iniciar(
         assinaturaTodosPostes('telemetria'),
         assinaturaTodosPostes('evento'),
         assinaturaTodosPostes('saude'),
+        TOPICO_EDGE_ESTADO,
       ],
       { qos: 1 },
     );
@@ -193,7 +212,18 @@ function iniciar(
     }
   };
 
+  // Presença do simulador de campo (Last Will do edge), repassada no relatório.
+  let edgeOnline: boolean | null = null;
+
   campo.on('message', (topico, payload) => {
+    if (topico === TOPICO_EDGE_ESTADO) {
+      const estado = lerJson<MsgEdgeEstado>(payload);
+      if (estado && estado.online !== edgeOnline) {
+        edgeOnline = estado.online;
+        log(`campo (edge) ${edgeOnline ? 'no ar' : 'fora do ar'}`);
+      }
+      return;
+    }
     const alvo = parseTopicoPoste(topico);
     const gateway = alvo && gateways.get(alvo.bairroSlug);
     if (!alvo || !gateway) return;
@@ -255,18 +285,42 @@ function iniciar(
 
   agendar('resumo', config.janelaResumoMs, () => {
     let online = 0;
+    const porGateway: MsgFogTrafego['gateways'] = [];
     for (const g of gateways.values()) {
       const resumo = g.fecharJanela();
       online += resumo.totais.online;
+      porGateway.push({
+        bairro: g.bairro,
+        postes: resumo.totais.postes,
+        online: resumo.totais.online,
+      });
       uplink.enviar({
         topico: topicoNuvem(g.bairro, 'resumo'),
         payload: JSON.stringify(resumo),
       });
     }
+    const { numeros, texto } = trafego.fecharJanela(uplink.pendentes);
     log(
-      `janela ${config.janelaResumoMs / 1000}s · ${online}/${totalPostes} postes no ar · ` +
-        trafego.fecharJanela(uplink.pendentes),
+      `janela ${config.janelaResumoMs / 1000}s · ${online}/${totalPostes} postes no ar · ${texto}`,
     );
+
+    // Relatório de banda para a nuvem: retido (quem assina recebe o último) e
+    // fora do buffer, porque um relatório velho não interessa.
+    if (nuvem.connected) {
+      nuvem.publish(
+        TOPICO_FOG_TRAFEGO,
+        JSON.stringify({
+          janelaS: config.janelaResumoMs / 1000,
+          ...numeros,
+          buffer: uplink.pendentes,
+          postes: { total: totalPostes, online },
+          gateways: porGateway,
+          edgeOnline,
+          em: new Date().toISOString(),
+        } satisfies MsgFogTrafego),
+        { qos: 1, retain: true },
+      );
+    }
   });
 
   const encerrar = (sinal: string): void => {

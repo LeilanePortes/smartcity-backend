@@ -34,7 +34,8 @@ import {
  * de status ao longo do tempo (roadmap Fase 2).
  *
  * O estado vivo dos postes é mantido em memória e sincronizado com o banco a
- * cada tick. Desligue com `SIMULADOR_ENABLED=false`.
+ * cada tick. Desligue com `SIMULADOR_ENABLED=false`. Com `SIMULADOR_MODO=camadas`
+ * os dados vêm do fog e o simulador só mantém a limpeza de retenção.
  */
 @Injectable()
 export class SimuladorService implements OnModuleInit, OnModuleDestroy {
@@ -58,6 +59,17 @@ export class SimuladorService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     if (!this.config.habilitado) {
       this.logger.warn('Simulador desabilitado (SIMULADOR_ENABLED=false).');
+      return;
+    }
+
+    if (this.config.somenteLimpeza) {
+      // Os dados ao vivo vêm do fog (IngestaoService); a retenção continua aqui.
+      this.registrar('sim:limpeza', this.config.intervaloLimpezaMs, () =>
+        this.tickLimpeza(),
+      );
+      this.logger.log(
+        'Simulador interno em espera (SIMULADOR_MODO=camadas) — só a limpeza de retenção fica ativa.',
+      );
       return;
     }
 

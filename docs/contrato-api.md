@@ -242,11 +242,60 @@ As 4 categorias vêm sempre, mesmo com `quantidade: 0`.
 
 ---
 
+## Arquitetura
+
+### `GET /arquitetura`
+
+Estado das camadas edge · fog · nuvem (memória da API; atualiza a cada janela do
+fog, 60 s). Com `modo: "interno"` (simulador embutido), `edge`, `fog` e `trafego`
+vêm `null` e `alertas` vazio.
+
+```jsonc
+// GET /arquitetura
+{
+  "modo": "camadas",                       // "camadas" | "interno"
+  "nuvem": { "brokerConectado": true },
+  "edge": { "online": true },              // null até o 1º relatório do fog
+  "fog": {                                 // null até o fog se anunciar
+    "online": true,
+    "gateways": [                          // um por bairro (9)
+      { "bairro": "Centro", "postes": 46, "online": 46 }
+    ],
+    "buffer": 0,                           // msgs guardadas esperando a nuvem
+    "atualizadoEm": "2026-10-18T18:11:06.722Z"
+  },
+  "trafego": {                             // última janela
+    "janelaS": 60,
+    "entrada": { "msgs": 1586, "bytes": 237231 },   // postes → fog
+    "saida":   { "msgs": 137,  "bytes": 98834 },    // fog → nuvem
+    "reducaoMsgsPct": 91,
+    "reducaoBytesPct": 58,
+    "postes": { "total": 248, "online": 243 },
+    "em": "2026-10-18T18:11:06.722Z"
+  },
+  "alertas": [                             // até 20, mais recentes primeiro
+    {
+      "posteId": "e383b828-8b99-4e4d-9468-c5d8d50fda7c",
+      "codigo": "P-062",
+      "bairro": "Setor Leste",
+      "statusAnterior": "CONSUMO_ALTO",
+      "status": "NORMAL",
+      "motivo": "consumo 0,98× a mediana do bairro",
+      "em": "2026-10-18T18:11:26.712Z"
+    }
+  ],
+  "geradoEm": "2026-10-18T18:11:46.729Z"
+}
+```
+
+---
+
 ## WebSocket — `ws://localhost:3000/tempo-real`
 
 Socket.IO, namespace `/tempo-real`. Sem autenticação. As atualizações ao vivo
-vêm do simulador; com `SIMULADOR_ENABLED=false` o gateway ainda entrega o estado
-inicial e as mudanças manuais de status.
+vêm da camada fog (ou do simulador embutido, no modo `SIMULADOR_MODO=interno`),
+sempre no mesmo formato; com `SIMULADOR_ENABLED=false` o gateway ainda entrega o
+estado inicial e as mudanças manuais de status.
 
 ### Cliente → servidor (todos respondem com ack `{ ok: boolean }`)
 
