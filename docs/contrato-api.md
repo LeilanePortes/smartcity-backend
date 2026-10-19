@@ -317,7 +317,7 @@ Detalhes de cada campo no `API.md`.
     "grupos": { "canario": ["P-012", "..."], "controle": ["P-069", "..."] },
     "metricas": {                           // null até o 1º portão
       "canario":  { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.1814, "consumoAltoPct": 100 },
-      "controle": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.0999, "consumoAltoPct": 0 },
+      "controle": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.0999, "consumoAltoPct": 0 },   // null na onda de 100%
       "referenciaConsumo": 0.0999, "razaoConsumo": 1.82
     },
     "falhas": [],                           // { codigo, motivo }, até 20
