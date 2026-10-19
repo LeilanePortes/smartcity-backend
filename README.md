@@ -20,7 +20,8 @@ e [`roadmap-backend-nestjs.md`](./roadmap-backend-nestjs.md).
 
 ## Rodar tudo com Docker
 
-Sobe **banco + API + simulador** de uma vez. Na primeira subida o container
+Sobe **banco + API + simulador + brokers MQTT + camadas edge e fog** de uma vez (ver
+[Camadas edge · fog · nuvem](#camadas-edge--fog--nuvem-mqtt)). Na primeira subida o container
 aplica as migrations, roda o seed dos 248 postes e gera o histórico (backfill)
 automaticamente — isso leva alguns minutos; nas próximas ele detecta o banco já
 populado e vai direto para a API.
@@ -123,6 +124,12 @@ SIMULADOR_INTERVALO_TELEMETRIA_MS=3000 bun run start:dev
 | `bun run db:backfill` | Histórico: telemetria/eventos (`DIAS_RAW`) + agregados diários (`DIAS_AGREGADO`) |
 | `bun run db:reset` | Recria o banco do zero e roda o seed |
 | `bun run build` / `bun run lint` | Compila para `dist/` · oxlint |
+| `bun run test` | Testes unitários (Jest) |
+
+Os testes rodam no **Node ≥ 24.9** com `--experimental-vm-modules` (já embutido nos
+scripts `test*`): o NestJS 12 é distribuído como ES Module, e o Jest só carrega ES
+Module a partir de código CommonJS com essa opção. Sem Node instalado, rode num
+container: `docker run --rm -v "$PWD":/app -w /app node:24-slim node --experimental-vm-modules node_modules/jest/bin/jest.js`.
 
 ## Modelo de dados
 
@@ -137,9 +144,20 @@ Enums: `StatusPoste`, `TipoEventoSensor`, `SentidoVeiculo`, `PeriodoAgregado`.
 
 ## Seed
 
-`prisma/seed.ts` gera de forma **determinística** (PRNG com seed fixa) os 248 postes
-distribuídos por 9 bairros de Itaguari, com endereços e coordenadas plausíveis em torno
-do centro da cidade. A distribuição inicial de status segue o PRD:
+`prisma/seed.ts` gera de forma **determinística** os 248 postes **sobre as ruas reais**
+do centro de Itaguari: um poste a cada 35 m ao longo das ruas com nome, a partir do centro
+(raio de ~450 m), sem duplicar cruzamentos. O endereço é a rua real e a distância ao longo
+dela (ex.: "Avenida Goiás, 158"). O bairro vem da posição: "Centro" num raio de 170 m e os
+outros oito por direção (Setor Leste, Setor Industrial, Setor Norte, Vila Nova, Setor Oeste,
+Residencial Bela Vista, Setor Sul e Jardim Primavera, a partir do leste no sentido
+anti-horário). A regra está em [`prisma/dados/posicionar-postes.ts`](./prisma/dados/posicionar-postes.ts).
+
+O traçado das ruas fica em `prisma/dados/ruas-itaguari.json`, baixado do OpenStreetMap
+(Overpass API) por `bun run prisma/dados/baixar-ruas.ts` — o seed não depende de
+internet. Dados de ruas © [colaboradores do OpenStreetMap](https://www.openstreetmap.org/copyright),
+licença ODbL.
+
+A distribuição inicial de status segue o PRD:
 
 | Status | Qtd |
 |---|---|
@@ -197,7 +215,7 @@ Custo = consumo × tarifa **B4a** (R$ 0,58/kWh), exposta em `tarifa` na resposta
 
 As janelas de período são blocos de N dias inteiros (UTC) terminando à meia-noite
 de hoje — período cheio vs. período cheio. O consumo consolidado vem de
-`AgregadoConsumo` (rollup diário: cron às 00:15 + `db:backfill`); o dia corrente
+`AgregadoConsumo` (rollup diário: cron às 00:15 UTC + `db:backfill`; ao subir, a API também consolida os últimos 7 dias fechados que ficaram sem agregado, caso o cron não tenha rodado com ela desligada); o dia corrente
 é calculado ao vivo da telemetria.
 
 ## Tempo real — WebSocket (Fase 5)
@@ -225,6 +243,157 @@ estado inicial e as mudanças manuais de status.
 
 Os snapshots de delta trazem `posteId`, `codigo`, `status`, `luminosidadeAtual`,
 `consumoInstantaneoKw` e `ultimaLeituraEm`.
+
+## Camadas edge · fog · nuvem (MQTT)
+
+A rede está sendo separada nas três camadas de uma arquitetura IoT, ligadas por
+**dois brokers MQTT** (Mosquitto): o do **campo** (`mosquitto`, porta `1883`),
+entre postes e gateways, e o da **nuvem** (`mosquitto-nuvem`, porta `1884`),
+entre gateways e API. Assim a queda da nuvem não afeta a rede local.
+
+```
+edge (248 postes) ──1883──► fog (9 gateways) ──1884──► nuvem (API)
+   telemetria/10 s             diagnóstico              histórico, KPIs, app
+   eventos na hora             resumo/min + alertas
+   ◄────────── comandos ◄──────────── comandos ◄──────────
+```
+
+| Camada | Serviço | Papel |
+|---|---|---|
+| **Edge** | `edge` | Os 248 controladores de poste. Cada um decide a luminosidade **localmente** (sensor 360° → pico 100%, veículo se afasta → piso 50%), sem depender da rede, e publica o que mediu. |
+| **Fog** | `fog` | Um gateway por bairro: diagnostica o status dos postes, agrega a telemetria e sobe para a nuvem só resumos, eventos e alertas. |
+| **Nuvem** | `app` | Recebe do fog resumos, eventos e alertas, grava o histórico, calcula os KPIs e entrega o tempo real ao app; envia ao poste os comandos de manutenção. |
+
+**Modo de operação** (`SIMULADOR_MODO`):
+
+| Modo | De onde vêm os dados ao vivo | Quando usar |
+|---|---|---|
+| `camadas` (padrão no compose) | Do fog, pelo broker da nuvem. O simulador embutido fica em espera (só a limpeza de retenção roda). | Sempre — é a arquitetura edge · fog · nuvem. |
+| `interno` (padrão fora do compose) | Do simulador embutido na API, como antes das camadas. | **Reserva:** se algo nas camadas falhar, `SIMULADOR_MODO=interno docker compose up -d app`. Para voltar: `docker compose up -d app`. |
+
+O formato das respostas e do WebSocket é o mesmo nos dois modos — o app não
+percebe a diferença. O estado das camadas fica em [`GET /arquitetura`](./API.md#get-arquitetura).
+
+**Regenerar a rede** (apaga e recria postes e histórico simulados, com IDs novos):
+
+```bash
+docker compose stop edge fog
+DB_BOOTSTRAP=force docker compose up -d --force-recreate --no-deps app   # espere ficar healthy
+docker compose up -d --force-recreate --no-deps app                      # volta a auto (senão regenera a cada restart)
+docker compose up -d --force-recreate --no-deps edge fog                 # reprovisionam com os IDs novos
+```
+
+**Tópicos** — padrão `organização/área/dispositivo/grandeza`
+([`src/common/topicos-mqtt.ts`](./src/common/topicos-mqtt.ts)):
+
+| Tópico | Sentido | QoS | Quando |
+|---|---|---|---|
+| `itaguari/iluminacao/<bairro>/<poste>/telemetria` | edge → | 0 | a cada 10 s: `consumoKw`, `luminosidadePct` |
+| `itaguari/iluminacao/<bairro>/<poste>/evento` | edge → | 1 | na hora: `VEICULO_DETECTADO` / `RETORNO_AO_PISO` |
+| `itaguari/iluminacao/<bairro>/<poste>/saude` | edge → | 0 | a cada 30 s: `versaoFirmware`, `uptimeS`, `rssiDbm`, `memoriaLivreKb` |
+| `itaguari/iluminacao/<bairro>/<poste>/comando` | → edge | 1 | `{ "status": "MANUTENCAO" \| "NORMAL" }` |
+| `itaguari/iluminacao/_edge/estado` | edge → | 1 (retido) | presença do campo; *Last Will* publica `online: false` se ele cair |
+| `itaguari/nuvem/<bairro>/resumo` | fog → nuvem | 1 | a cada minuto: por poste, status, média de consumo/luminosidade, energia (kWh), versão de firmware |
+| `itaguari/nuvem/<bairro>/evento` | fog → nuvem | 1 | na hora: evento do sensor repassado com o bairro |
+| `itaguari/nuvem/<bairro>/alerta` | fog → nuvem | 1 | na hora: mudança de status diagnosticada (`statusAnterior`, `status`, `motivo`) |
+| `itaguari/nuvem/<bairro>/comando` | nuvem → fog | 1 | `{ "codigo": "P-042", "status": "MANUTENCAO" \| "NORMAL" }` — repassado ao poste |
+| `itaguari/nuvem/_fog/estado` | fog → nuvem | 1 (retido) | presença dos gateways (*Last Will*) e tamanho do buffer |
+| `itaguari/nuvem/_fog/trafego` | fog → nuvem | 1 (retido) | relatório de banda de cada janela (usado por `GET /arquitetura`) |
+| `itaguari/nuvem/<bairro>/ota` → `itaguari/iluminacao/<bairro>/<poste>/ota` | nuvem → fog → edge | 1 | ordem de atualização `{ "codigo", "versao" }` |
+| `itaguari/iluminacao/<bairro>/<poste>/ota-resultado` → `itaguari/nuvem/<bairro>/ota-resultado` | edge → fog → nuvem | 1 | resultado da instalação (sucesso ou rollback A/B) |
+
+O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`).
+
+**Como o edge simula o campo** ([`src/edge/`](./src/edge/)):
+
+- **Provisionamento:** ao subir, pergunta à nuvem quais postes existem (`GET /postes`).
+- **Falhas físicas:** o edge não declara status. Um driver degradado passa a gastar
+  mais, e um poste em falha simplesmente **para de publicar** — é a ausência de
+  telemetria que caracteriza o offline, como num aparelho real.
+- **Banda:** a cada minuto o log mostra quantas mensagens e bytes o campo publicou
+  (ordem de 1.600 mensagens/min para 248 postes).
+
+**Regras do fog** ([`src/fog/gateway.ts`](./src/fog/gateway.ts)), configuráveis por `FOG_*`:
+
+| Regra | Como funciona |
+|---|---|
+| `CONSUMO_ALTO` | Consumo **normalizado pela luminosidade** (kW a 100% de brilho, média das 3 últimas leituras) acima de **1,5×** a **mediana** do bairro; volta a `NORMAL` abaixo de 1,3× (histerese). Normalizar evita acusar um poste que só está no pico porque passou um carro; a mediana evita que os defeituosos puxem a referência. |
+| `FALHA_OFFLINE` | Nenhuma telemetria por **30 s** (3 leituras perdidas); volta a `NORMAL` quando o poste reaparece. |
+| `MANUTENCAO` | Só muda por comando do técnico; o fog não sobrescreve. |
+
+- **Agregação:** a telemetria (uma leitura por poste a cada 10 s) vira **um resumo
+  por bairro por minuto**. Eventos e alertas sobem na hora, para o mapa seguir ao vivo.
+- **Buffer (store-and-forward):** se o broker da nuvem cair, o fog guarda o que
+  iria subir e envia em ordem quando a conexão volta.
+- **Banda:** a cada janela o log compara o que entrou do campo com o que subiu —
+  na prática, **~88% menos mensagens e ~55% menos bytes**.
+
+Acompanhar o tráfego, enviar um comando e testar o buffer:
+
+```bash
+docker compose logs -f edge fog
+docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/iluminacao/#' -v   # campo
+docker exec smartcity-mosquitto-nuvem mosquitto_sub -t 'itaguari/nuvem/#' -v  # nuvem
+
+# comando do técnico: nuvem → fog → poste
+docker exec smartcity-mosquitto-nuvem mosquitto_pub -q 1 \
+  -t 'itaguari/nuvem/centro/comando' -m '{"codigo":"P-001","status":"MANUTENCAO"}'
+
+# manutenção pela API: grava no banco e o comando desce até o poste
+curl -X PATCH localhost:3000/postes/<id>/status -H 'Content-Type: application/json' \
+  -d '{"status":"MANUTENCAO"}'
+curl -s localhost:3000/arquitetura      # camadas, gateways, banda e alertas
+
+# queda da nuvem: o fog guarda e reenvia ao voltar
+docker compose stop mosquitto-nuvem; sleep 30; docker compose start mosquitto-nuvem
+```
+
+## OTA com grupo canário
+
+Atualização remota de firmware da frota, no modelo do material "Grupo Canário:
+atualizações seguras em frotas IoT" — tudo simulado, sem hardware
+([`src/ota/`](./src/ota/), [`src/common/firmware.ts`](./src/common/firmware.ts)).
+
+| Versão | Perfil | O que acontece |
+|---|---|---|
+| `2.4.1` | estável | versão inicial em campo |
+| `2.5.0` | estável | passa por todas as ondas e conclui |
+| `3.0.0` | **defeito de energia** (consumo ~1,8×) | passa no autoteste; o canário consome mais que o controle e a nuvem **reverte a frota** |
+| `3.0.1` | **falha no autoteste** | cada aparelho volta sozinho para a versão anterior (**rollback A/B**); a nuvem vê 100% de falha e para |
+
+**Como funciona:**
+
+1. **Ondas** de 5% → 25% → 50% → 100% da frota elegível (5% é o tamanho sugerido
+   para frotas de centenas de aparelhos). Postes em manutenção ou offline ficam de fora.
+2. **Grupo canário representativo:** postes de todos os bairros (rodízio), só
+   `NORMAL` na primeira onda. **Grupo de controle:** amostra parecida que segue na
+   versão antiga — a comparação isola o efeito da versão do "ruído" do ambiente.
+3. **No poste (edge):** grava a versão, reinicia (fica mudo ~8 s), faz o autoteste e
+   confirma, ou volta sozinho para a anterior (partições A/B). Informa o resultado.
+4. **Portão** ao fim de cada janela (120 s), com critérios escritos antes de começar:
+
+| Situação | Decisão |
+|---|---|
+| Falha de instalação > 5% dos que tentaram | **REVERTER** (na hora, se todos já responderam) |
+| Menos de 60% do canário reportou depois de instalar | **ESTENDER** a observação (até 2 vezes) |
+| Consumo normalizado do canário ≥ 1,5× o do controle | **REVERTER** |
+| Métricas próximas às do controle | **AVANÇAR** (ou **CONCLUIR** na última onda) |
+
+**Reverter a frota** = reenviar a versão anterior a quem instalou a nova (inclusive
+quem terminou de instalar depois da decisão). Em aparelhos com proteção
+*anti-rollback*, isso seria publicar o código antigo com um número de versão maior.
+
+```bash
+curl -s localhost:3000/ota                                     # catálogo, versões em campo, implantação
+curl -s -X POST localhost:3000/ota/implantacoes -H 'Content-Type: application/json' \
+  -d '{"versao":"3.0.0"}'                                      # o canário pega o defeito em ~2 min
+curl -s -X POST localhost:3000/ota/reverter                    # reversão manual
+docker compose logs -f app edge | grep -i ota
+```
+
+Configurável por `OTA_ONDAS`, `OTA_JANELA_S`, `OTA_LIMIAR_FALHA_PCT`,
+`OTA_LIMIAR_RAZAO_CONSUMO` e `EDGE_DURACAO_OTA_MS`. O estado da implantação fica em
+memória na API (reiniciar a API zera o histórico de implantações).
 
 ## Documentação (Fase 6)
 

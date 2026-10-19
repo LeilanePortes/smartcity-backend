@@ -12,8 +12,9 @@ da API rodando com o seed + `bun run db:backfill` padrão.
 - **CORS:** liberado para qualquer origem
 
 > **Mock acadêmico.** Os dados são sintéticos, mas coerentes com o PRD. As janelas
-> de data são calculadas em UTC. O simulador roda junto com a API e altera
-> luminosidade, consumo e status continuamente.
+> de data são calculadas em UTC. Os dados ao vivo vêm da arquitetura em camadas
+> (postes simulados → gateways fog → API, via MQTT) e mudam luminosidade, consumo e
+> status continuamente. Ver [`GET /arquitetura`](#get-arquitetura).
 
 ---
 
@@ -31,6 +32,12 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [`GET /kpis`](#get-kpis)
   - [`GET /kpis/maior-consumo`](#get-kpismaior-consumo)
   - [`GET /kpis/postes-por-status`](#get-kpispostes-por-status)
+- **Arquitetura**
+  - [`GET /arquitetura`](#get-arquitetura)
+- **OTA (firmware)**
+  - [`GET /ota`](#get-ota)
+  - [`POST /ota/implantacoes`](#post-otaimplantacoes)
+  - [`POST /ota/reverter`](#post-otareverter)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
 - [Notas do mock](#notas-do-mock)
@@ -532,6 +539,186 @@ Contagem de postes por status — barra empilhada do dashboard (PRD §5.3).
 }
 ```
 
+## Arquitetura
+
+### `GET /arquitetura`
+
+Estado das camadas **edge · fog · nuvem** — para a tela de arquitetura do app.
+É um painel do "agora" (memória da API, não histórico). Atualiza a cada janela do
+fog (60 s); para a tela, basta consultar a cada 10–15 s.
+
+**Sem parâmetros.**
+
+**Resposta `200`:**
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `modo` | `"camadas"` \| `"interno"` | `camadas`: dados vêm do fog. `interno`: simulador embutido (modo de reserva) — aí `edge`, `fog` e `trafego` vêm `null` e `alertas` vazio |
+| `nuvem.brokerConectado` | boolean | A API está conectada ao broker MQTT da nuvem |
+| `edge` | object \| null | `null` até o primeiro relatório do fog |
+| `edge.online` | boolean \| null | Simulador de campo (os 248 postes) no ar, visto pelo fog |
+| `fog` | object \| null | `null` até o fog se anunciar |
+| `fog.online` | boolean | Gateways no ar (vira `false` pelo *Last Will* se o fog cair) |
+| `fog.gateways[]` | array | Um por bairro: `{ bairro, postes, online }` |
+| `fog.buffer` | number | Mensagens guardadas no fog esperando a nuvem (0 = em dia) |
+| `fog.atualizadoEm` | string (ISO) | Último relatório do fog |
+| `trafego` | object \| null | Último relatório de banda (uma janela) |
+| `trafego.janelaS` | number | Duração da janela, em segundos |
+| `trafego.entrada` | `{ msgs, bytes }` | O que chegou dos postes ao fog na janela |
+| `trafego.saida` | `{ msgs, bytes }` | O que o fog subiu para a nuvem na janela |
+| `trafego.reducaoMsgsPct` / `reducaoBytesPct` | number \| null | Redução percentual (0–100) na subida |
+| `trafego.postes` | `{ total, online }` | Postes reportando, segundo o fog |
+| `trafego.em` | string (ISO) | Fim da janela |
+| `alertas[]` | array | Até 20 mudanças de status diagnosticadas pelo fog, **mais recentes primeiro** |
+| `alertas[].posteId` / `codigo` / `bairro` | string | |
+| `alertas[].statusAnterior` / `status` | `StatusPoste` | |
+| `alertas[].motivo` | string | Ex.: `"sem telemetria há 31 s"`, `"consumo 2,10× a mediana do bairro"` |
+| `alertas[].em` | string (ISO) | |
+| `geradoEm` | string (ISO) | |
+
+```json
+{
+  "modo": "camadas",
+  "nuvem": { "brokerConectado": true },
+  "edge": { "online": true },
+  "fog": {
+    "online": true,
+    "gateways": [
+      { "bairro": "Centro", "postes": 46, "online": 46 },
+      { "bairro": "Setor Leste", "postes": 31, "online": 31 }
+    ],
+    "buffer": 0,
+    "atualizadoEm": "2026-10-18T18:11:06.722Z"
+  },
+  "trafego": {
+    "janelaS": 60,
+    "entrada": { "msgs": 1586, "bytes": 237231 },
+    "saida": { "msgs": 137, "bytes": 98834 },
+    "reducaoMsgsPct": 91,
+    "reducaoBytesPct": 58,
+    "postes": { "total": 248, "online": 243 },
+    "em": "2026-10-18T18:11:06.722Z"
+  },
+  "alertas": [
+    {
+      "posteId": "e383b828-8b99-4e4d-9468-c5d8d50fda7c",
+      "codigo": "P-062",
+      "bairro": "Setor Leste",
+      "statusAnterior": "CONSUMO_ALTO",
+      "status": "NORMAL",
+      "motivo": "consumo 0,98× a mediana do bairro",
+      "em": "2026-10-18T18:11:26.712Z"
+    }
+  ],
+  "geradoEm": "2026-10-18T18:11:46.729Z"
+}
+```
+
+(`gateways` traz os 9 bairros; o exemplo mostra 2.)
+
+---
+
+## OTA (firmware)
+
+### `GET /ota`
+
+Atualização remota de firmware (OTA) com **grupo canário**: catálogo de versões,
+distribuição atual da frota e a implantação em andamento (ou a última).
+Requer `modo: "camadas"`. Para acompanhar, consulte a cada 5–10 s.
+
+**Resposta `200`:**
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `modo` | `"camadas"` \| `"interno"` | OTA só funciona em `camadas` |
+| `catalogo[]` | `{ versao, descricao }` | Versões disponíveis. `2.5.0` estável; `3.0.0` e `3.0.1` têm defeito proposital (para a demonstração) |
+| `versoesEmCampo` | `{ [versao]: number }` | Quantos postes rodam cada versão (último resumo do fog; `desconhecida` = sem reportar) |
+| `criterios` | object | Critérios escritos antes de começar: `ondas` (% acumulado), `janelaS` (observação por onda), `limiarFalhaInstalacaoPct`, `limiarRazaoConsumo`, `minReportePct`, `maxExtensoes` |
+| `implantacao` | object \| null | `null` se nenhuma foi iniciada desde que a API subiu |
+| `implantacao.versao` / `versaoAnterior` | string | Versão nova / versão predominante quando começou |
+| `implantacao.status` | `"EM_ANDAMENTO"` \| `"CONCLUIDA"` \| `"REVERTIDA"` | |
+| `implantacao.iniciadaEm` / `encerradaEm` | string (ISO) \| null | |
+| `implantacao.ondas` / `ondaAtual` / `ondaAtualPct` | number[] / number / number | Ex.: `[5,25,50,100]`, índice `1`, `25` |
+| `implantacao.proximaAvaliacaoEm` | string (ISO) \| null | Próximo portão de decisão |
+| `implantacao.aparelhos` | object | `elegiveis`, `enviados`, `instalados`, `falhas`, `pendentes`, `revertidos` |
+| `implantacao.grupos.canario` / `controle` | string[] | Códigos dos postes: quem já está na versão nova × amostra que segue na antiga |
+| `implantacao.metricas` | object \| null | Do último portão (`null` até o 1º portão): `canario` e `controle` (`{ aparelhos, reportaram, consumoNormalizadoMedio, consumoAltoPct }`), `referenciaConsumo`, `razaoConsumo`. `controle` vem `null` na onda de 100% (não sobra ninguém na versão antiga): aí `referenciaConsumo` é a linha de base medida no início da implantação. `consumoNormalizadoMedio`, `referenciaConsumo` e `razaoConsumo` podem vir `null` sem dados suficientes |
+| `implantacao.falhas[]` | `{ codigo, motivo }` | Até 20 falhas de instalação |
+| `implantacao.decisoes[]` | array | Histórico dos portões: `{ em, ondaPct, decisao, motivo, razaoConsumo }`, `decisao` = `AVANCAR` \| `ESTENDER` \| `CONCLUIR` \| `REVERTER` |
+
+`consumoNormalizadoMedio` é o consumo em kW a 100% de luminosidade (independe de
+pico/piso); `razaoConsumo` = canário ÷ controle.
+
+```json
+{
+  "modo": "camadas",
+  "catalogo": [
+    { "versao": "2.4.1", "descricao": "Versão atualmente em campo (estável)." },
+    { "versao": "2.5.0", "descricao": "Ajustes no sensor 360° e na reconexão MQTT (estável)." },
+    { "versao": "3.0.0", "descricao": "Novo agrupamento de leituras para economizar banda — DEFEITO: ..." },
+    { "versao": "3.0.1", "descricao": "Build corrompido — DEFEITO: falha no autoteste ..." }
+  ],
+  "versoesEmCampo": { "2.4.1": 231, "3.0.0": 13, "desconhecida": 4 },
+  "criterios": {
+    "ondas": [5, 25, 50, 100],
+    "janelaS": 120,
+    "limiarFalhaInstalacaoPct": 5,
+    "limiarRazaoConsumo": 1.5,
+    "minReportePct": 60,
+    "maxExtensoes": 2
+  },
+  "implantacao": {
+    "versao": "3.0.0",
+    "versaoAnterior": "2.4.1",
+    "status": "REVERTIDA",
+    "iniciadaEm": "2026-10-18T18:43:21.000Z",
+    "encerradaEm": "2026-10-18T18:45:26.000Z",
+    "ondas": [5, 25, 50, 100],
+    "ondaAtual": 0,
+    "ondaAtualPct": 5,
+    "proximaAvaliacaoEm": null,
+    "aparelhos": { "elegiveis": 241, "enviados": 13, "instalados": 13, "falhas": 0, "pendentes": 0, "revertidos": 13 },
+    "grupos": { "canario": ["P-012", "P-087", "P-140"], "controle": ["P-069", "P-175", "P-153"] },
+    "metricas": {
+      "canario": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.1814, "consumoAltoPct": 100 },
+      "controle": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.0999, "consumoAltoPct": 0 },
+      "referenciaConsumo": 0.0999,
+      "razaoConsumo": 1.82
+    },
+    "falhas": [],
+    "decisoes": [
+      {
+        "em": "2026-10-18T18:45:26.000Z",
+        "ondaPct": 5,
+        "decisao": "REVERTER",
+        "motivo": "consumo do canário 1,82× o do grupo de controle (limite 1,50×)",
+        "razaoConsumo": 1.82
+      }
+    ]
+  }
+}
+```
+
+(`grupos` traz todos os códigos; o exemplo mostra 3 de cada.)
+
+### `POST /ota/implantacoes`
+
+Inicia a distribuição de uma versão. Começa pelo canário (primeira onda, só
+postes `NORMAL`, espalhados entre os bairros) e avança sozinha a cada portão.
+Postes em `MANUTENCAO` ou `FALHA_OFFLINE` ficam de fora.
+
+**Body:** `{ "versao": "2.5.0" }` (formato `X.Y.Z`).
+
+**Respostas:** `201` com o mesmo corpo de `GET /ota` · `400` versão inválida ou
+igual à atual · `409` já existe implantação em andamento, ou a API está no modo
+`interno`.
+
+### `POST /ota/reverter`
+
+Decisão manual da equipe: para a implantação em andamento e reenvia a versão
+anterior a quem instalou a nova. **Respostas:** `200` com o corpo de `GET /ota` ·
+`409` se não houver implantação em andamento.
+
 ---
 
 ## `GET /`
@@ -556,8 +743,11 @@ Metadados da API (não aparece no Swagger).
 WebSocket puro; use `socket.io-client`). Namespace `/tempo-real`. Sem
 autenticação. CORS liberado.
 
-As atualizações ao vivo vêm do simulador. Com `SIMULADOR_ENABLED=false` o gateway
-ainda entrega o estado inicial e as mudanças manuais de status (via `PATCH`).
+As atualizações ao vivo vêm da camada fog (eventos do sensor na hora; telemetria
+e status pelo resumo de cada minuto e pelos alertas). O formato é o mesmo no modo
+de reserva (`SIMULADOR_MODO=interno`, simulador embutido). Com
+`SIMULADOR_ENABLED=false` o gateway ainda entrega o estado inicial e as mudanças
+manuais de status (via `PATCH`).
 
 ### Salas
 
@@ -706,10 +896,14 @@ socket.on('poste:atualizado', (data) {});
   comparação anual dos KPIs).
 - **Fuso.** Todo cálculo de janela e todo `date_trunc` é em **UTC**. O único
   ponto que usa hora local é o início de `telemetria?periodo=hoje`.
-- **Simulador.** Roda junto com a API (`SIMULADOR_ENABLED=true`, default). A cada
-  poucos segundos altera luminosidade (piso 50 % ↔ pico 100 %), grava leituras de
-  consumo e move postes entre `NORMAL`/`CONSUMO_ALTO`/`FALHA_OFFLINE` mantendo a
-  distribuição do PRD. `MANUTENCAO` só muda via `PATCH`.
+- **Camadas (padrão no docker compose, `SIMULADOR_MODO=camadas`).** Os 248 postes
+  rodam como dispositivos MQTT (edge) e decidem a luminosidade localmente (piso
+  50 % ↔ pico 100 %). Os gateways por bairro (fog) diagnosticam `CONSUMO_ALTO` e
+  `FALHA_OFFLINE` e sobem para a API um **resumo por minuto** (uma leitura média por
+  poste), os eventos do sensor na hora e os alertas. `MANUTENCAO` só muda via
+  `PATCH`, que também envia o comando até o poste.
+- **Reserva (`SIMULADOR_MODO=interno`).** O simulador embutido na API faz o mesmo
+  papel, com leituras a cada 10 s, no mesmo formato de resposta.
 - **`consumoInstantaneoKw`** típico: ~0,05 kW no piso, ~0,10 kW no pico,
   ~0,10–0,25 kW quando `CONSUMO_ALTO`, `0` quando `FALHA_OFFLINE`/`MANUTENCAO`.
 - Ver também: [`docs/contrato-api.md`](./docs/contrato-api.md),

@@ -242,11 +242,101 @@ As 4 categorias vêm sempre, mesmo com `quantidade: 0`.
 
 ---
 
+## Arquitetura
+
+### `GET /arquitetura`
+
+Estado das camadas edge · fog · nuvem (memória da API; atualiza a cada janela do
+fog, 60 s). Com `modo: "interno"` (simulador embutido), `edge`, `fog` e `trafego`
+vêm `null` e `alertas` vazio.
+
+```jsonc
+// GET /arquitetura
+{
+  "modo": "camadas",                       // "camadas" | "interno"
+  "nuvem": { "brokerConectado": true },
+  "edge": { "online": true },              // null até o 1º relatório do fog
+  "fog": {                                 // null até o fog se anunciar
+    "online": true,
+    "gateways": [                          // um por bairro (9)
+      { "bairro": "Centro", "postes": 46, "online": 46 }
+    ],
+    "buffer": 0,                           // msgs guardadas esperando a nuvem
+    "atualizadoEm": "2026-10-18T18:11:06.722Z"
+  },
+  "trafego": {                             // última janela
+    "janelaS": 60,
+    "entrada": { "msgs": 1586, "bytes": 237231 },   // postes → fog
+    "saida":   { "msgs": 137,  "bytes": 98834 },    // fog → nuvem
+    "reducaoMsgsPct": 91,
+    "reducaoBytesPct": 58,
+    "postes": { "total": 248, "online": 243 },
+    "em": "2026-10-18T18:11:06.722Z"
+  },
+  "alertas": [                             // até 20, mais recentes primeiro
+    {
+      "posteId": "e383b828-8b99-4e4d-9468-c5d8d50fda7c",
+      "codigo": "P-062",
+      "bairro": "Setor Leste",
+      "statusAnterior": "CONSUMO_ALTO",
+      "status": "NORMAL",
+      "motivo": "consumo 0,98× a mediana do bairro",
+      "em": "2026-10-18T18:11:26.712Z"
+    }
+  ],
+  "geradoEm": "2026-10-18T18:11:46.729Z"
+}
+```
+
+---
+
+## OTA (firmware)
+
+### `GET /ota` · `POST /ota/implantacoes` · `POST /ota/reverter`
+
+Atualização remota de firmware com grupo canário (só no modo `camadas`).
+Detalhes de cada campo no `API.md`.
+
+```jsonc
+// POST /ota/implantacoes   body: { "versao": "3.0.0" }   → 201 (mesmo corpo do GET)
+// POST /ota/reverter       → 200 (409 se não houver implantação em andamento)
+// GET /ota
+{
+  "modo": "camadas",
+  "catalogo": [ { "versao": "2.5.0", "descricao": "..." } ],   // 2.4.1, 2.5.0, 3.0.0 (defeito de energia), 3.0.1 (falha no autoteste)
+  "versoesEmCampo": { "2.4.1": 231, "3.0.0": 13, "desconhecida": 4 },
+  "criterios": { "ondas": [5, 25, 50, 100], "janelaS": 120, "limiarFalhaInstalacaoPct": 5,
+                 "limiarRazaoConsumo": 1.5, "minReportePct": 60, "maxExtensoes": 2 },
+  "implantacao": {                          // null se nenhuma foi iniciada
+    "versao": "3.0.0", "versaoAnterior": "2.4.1",
+    "status": "REVERTIDA",                  // EM_ANDAMENTO | CONCLUIDA | REVERTIDA
+    "iniciadaEm": "2026-10-18T18:43:21.000Z", "encerradaEm": "2026-10-18T18:45:26.000Z",
+    "ondas": [5, 25, 50, 100], "ondaAtual": 0, "ondaAtualPct": 5,
+    "proximaAvaliacaoEm": null,
+    "aparelhos": { "elegiveis": 241, "enviados": 13, "instalados": 13, "falhas": 0, "pendentes": 0, "revertidos": 13 },
+    "grupos": { "canario": ["P-012", "..."], "controle": ["P-069", "..."] },
+    "metricas": {                           // null até o 1º portão
+      "canario":  { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.1814, "consumoAltoPct": 100 },
+      "controle": { "aparelhos": 13, "reportaram": 13, "consumoNormalizadoMedio": 0.0999, "consumoAltoPct": 0 },   // null na onda de 100%
+      "referenciaConsumo": 0.0999, "razaoConsumo": 1.82
+    },
+    "falhas": [],                           // { codigo, motivo }, até 20
+    "decisoes": [                           // um por portão
+      { "em": "2026-10-18T18:45:26.000Z", "ondaPct": 5, "decisao": "REVERTER",   // AVANCAR | ESTENDER | CONCLUIR | REVERTER
+        "motivo": "consumo do canário 1,82× o do grupo de controle (limite 1,50×)", "razaoConsumo": 1.82 }
+    ]
+  }
+}
+```
+
+---
+
 ## WebSocket — `ws://localhost:3000/tempo-real`
 
 Socket.IO, namespace `/tempo-real`. Sem autenticação. As atualizações ao vivo
-vêm do simulador; com `SIMULADOR_ENABLED=false` o gateway ainda entrega o estado
-inicial e as mudanças manuais de status.
+vêm da camada fog (ou do simulador embutido, no modo `SIMULADOR_MODO=interno`),
+sempre no mesmo formato; com `SIMULADOR_ENABLED=false` o gateway ainda entrega o
+estado inicial e as mudanças manuais de status.
 
 ### Cliente → servidor (todos respondem com ack `{ ok: boolean }`)
 

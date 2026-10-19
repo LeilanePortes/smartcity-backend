@@ -1,9 +1,12 @@
 import { ConfigService } from '@nestjs/config';
+import { lerModoSimulador } from '../ingestao/ingestao.config';
 
 /// Configuração do simulador de telemetria, lida de variáveis de ambiente
 /// com defaults pensados para um demo local (valores em milissegundos).
 export interface SimuladorConfig {
   habilitado: boolean;
+  /// Com SIMULADOR_MODO=camadas os dados vêm do fog: o simulador só faz a limpeza.
+  somenteLimpeza: boolean;
   intervaloSensoresMs: number;
   intervaloTelemetriaMs: number;
   intervaloStatusMs: number;
@@ -19,6 +22,7 @@ function numero(raw: string | undefined, padrao: number): number {
 export function lerSimuladorConfig(config: ConfigService): SimuladorConfig {
   return {
     habilitado: (config.get<string>('SIMULADOR_ENABLED') ?? 'true') !== 'false',
+    somenteLimpeza: lerModoSimulador(config) === 'camadas',
     intervaloSensoresMs: numero(
       config.get('SIMULADOR_INTERVALO_SENSORES_MS'),
       5_000,

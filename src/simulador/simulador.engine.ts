@@ -78,6 +78,59 @@ const operante = (e: EstadoPoste): boolean =>
 export const probDeteccaoPorTick = (intervaloMs: number): number =>
   Math.min(1, TAXA_DETECCAO_POR_MIN * (intervaloMs / 60_000));
 
+// --- Estado inicial e mudança manual ------------------------------------
+
+/// Campos "atuais" de um poste, como vêm do banco ou de `GET /postes`.
+export interface PosteAtual {
+  id: string;
+  codigo: string;
+  status: StatusPoste;
+  luminosidadeAtual: number;
+  consumoInstantaneoKw: number;
+  ultimaLeituraEm: Date | null;
+}
+
+/** Monta o estado vivo de um poste a partir dos seus campos atuais. */
+export function estadoInicial(p: PosteAtual): EstadoPoste {
+  const noPico = p.luminosidadeAtual >= LUMINOSIDADE_PICO_PCT;
+  return {
+    id: p.id,
+    codigo: p.codigo,
+    status: p.status,
+    luminosidadePct: p.luminosidadeAtual,
+    veiculoPresente: noPico,
+    sentidoVeiculo: null,
+    picoAteMs: noPico ? Date.now() + 5_000 : null,
+    fatorConsumoAlto:
+      p.status === StatusPoste.CONSUMO_ALTO
+        ? entre(FATOR_CONSUMO_ALTO_MIN, FATOR_CONSUMO_ALTO_MAX)
+        : 1,
+    consumoKw: p.consumoInstantaneoKw,
+    ultimaLeituraEm: p.ultimaLeituraEm,
+  };
+}
+
+/**
+ * Aplica uma mudança de status feita pelo técnico (PATCH /postes/:id/status
+ * ou comando MQTT): MANUTENCAO desliga o poste, NORMAL o devolve ao piso.
+ */
+export function aplicarStatusManual(
+  estado: EstadoPoste,
+  status: StatusPoste,
+): void {
+  estado.status = status;
+  if (status === StatusPoste.MANUTENCAO) {
+    estado.luminosidadePct = 0;
+    estado.consumoKw = 0;
+    estado.veiculoPresente = false;
+    estado.sentidoVeiculo = null;
+    estado.picoAteMs = null;
+  } else if (status === StatusPoste.NORMAL) {
+    estado.luminosidadePct = LUMINOSIDADE_PISO_PCT;
+    estado.fatorConsumoAlto = 1;
+  }
+}
+
 // --- Passo do sensor 360° ----------------------------------------------
 
 /**

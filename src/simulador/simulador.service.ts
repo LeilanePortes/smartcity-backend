@@ -7,13 +7,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { StatusPoste } from '@prisma/client';
-import {
-  FATOR_CONSUMO_ALTO_MAX,
-  FATOR_CONSUMO_ALTO_MIN,
-  LUMINOSIDADE_PICO_PCT,
-  LUMINOSIDADE_PISO_PCT,
-} from '../common/constants';
 import { EVENTO_POSTE_STATUS_ALTERADO } from '../postes/postes.events';
 import type { PosteStatusAlteradoEvent } from '../postes/postes.events';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,7 +17,9 @@ import {
 } from './simulador.events';
 import { lerSimuladorConfig, SimuladorConfig } from './simulador.config';
 import {
+  aplicarStatusManual,
   EstadoPoste,
+  estadoInicial,
   EventoGerado,
   gerarLeitura,
   LeituraGerada,
@@ -39,7 +34,8 @@ import {
  * de status ao longo do tempo (roadmap Fase 2).
  *
  * O estado vivo dos postes é mantido em memória e sincronizado com o banco a
- * cada tick. Desligue com `SIMULADOR_ENABLED=false`.
+ * cada tick. Desligue com `SIMULADOR_ENABLED=false`. Com `SIMULADOR_MODO=camadas`
+ * os dados vêm do fog e o simulador só mantém a limpeza de retenção.
  */
 @Injectable()
 export class SimuladorService implements OnModuleInit, OnModuleDestroy {
@@ -63,6 +59,17 @@ export class SimuladorService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     if (!this.config.habilitado) {
       this.logger.warn('Simulador desabilitado (SIMULADOR_ENABLED=false).');
+      return;
+    }
+
+    if (this.config.somenteLimpeza) {
+      // Os dados ao vivo vêm do fog (IngestaoService); a retenção continua aqui.
+      this.registrar('sim:limpeza', this.config.intervaloLimpezaMs, () =>
+        this.tickLimpeza(),
+      );
+      this.logger.log(
+        'Simulador interno em espera (SIMULADOR_MODO=camadas) — só a limpeza de retenção fica ativa.',
+      );
       return;
     }
 
@@ -103,19 +110,7 @@ export class SimuladorService implements OnModuleInit, OnModuleDestroy {
   @OnEvent(EVENTO_POSTE_STATUS_ALTERADO)
   aoAlterarStatusManual({ posteId, status }: PosteStatusAlteradoEvent): void {
     const estado = this.estado.get(posteId);
-    if (!estado) return;
-
-    estado.status = status;
-    if (status === StatusPoste.MANUTENCAO) {
-      estado.luminosidadePct = 0;
-      estado.consumoKw = 0;
-      estado.veiculoPresente = false;
-      estado.sentidoVeiculo = null;
-      estado.picoAteMs = null;
-    } else if (status === StatusPoste.NORMAL) {
-      estado.luminosidadePct = LUMINOSIDADE_PISO_PCT;
-      estado.fatorConsumoAlto = 1;
-    }
+    if (estado) aplicarStatusManual(estado, status);
   }
 
   /** Carrega o estado inicial dos postes a partir do banco (pós-seed). */
@@ -133,23 +128,7 @@ export class SimuladorService implements OnModuleInit, OnModuleDestroy {
     });
 
     for (const p of postes) {
-      const noPico = p.luminosidadeAtual >= LUMINOSIDADE_PICO_PCT;
-      this.estado.set(p.id, {
-        id: p.id,
-        codigo: p.codigo,
-        status: p.status,
-        luminosidadePct: p.luminosidadeAtual,
-        veiculoPresente: noPico,
-        sentidoVeiculo: null,
-        picoAteMs: noPico ? Date.now() + 5_000 : null,
-        fatorConsumoAlto:
-          p.status === StatusPoste.CONSUMO_ALTO
-            ? FATOR_CONSUMO_ALTO_MIN +
-              Math.random() * (FATOR_CONSUMO_ALTO_MAX - FATOR_CONSUMO_ALTO_MIN)
-            : 1,
-        consumoKw: p.consumoInstantaneoKw,
-        ultimaLeituraEm: p.ultimaLeituraEm,
-      });
+      this.estado.set(p.id, estadoInicial(p));
     }
   }
 

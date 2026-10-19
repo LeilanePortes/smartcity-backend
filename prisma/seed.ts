@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { PrismaClient, Prisma, StatusPoste } from '@prisma/client';
 import {
   CIDADE,
@@ -5,17 +7,20 @@ import {
   TOTAL_POSTES,
   UF,
 } from '../src/common/constants';
+import {
+  posicionarPostes,
+  PostePosicionado,
+  RuaOsm,
+} from './dados/posicionar-postes';
 
 const prisma = new PrismaClient();
 
 // Centro real de Itaguari, GO.
-const CENTRO_LAT = -15.920801;
-const CENTRO_LON = -49.606172;
+const CENTRO = { lat: -15.920801, lon: -49.606172 };
 
-// Fator de redução aplicado aos deslocamentos de bairro (BAIRROS[].dLat/dLon)
-// e ao jitter/passo das ruas, para manter os 248 postes dentro do núcleo
-// urbano real da cidade (malha de ruas pequena, raio < ~1 km do centro).
-const RAIO_ESCALA = 0.45;
+// Ruas reais do núcleo urbano, baixadas do OpenStreetMap por
+// `prisma/dados/baixar-ruas.ts` (© colaboradores do OpenStreetMap, ODbL).
+const ARQUIVO_RUAS = join(__dirname, 'dados', 'ruas-itaguari.json');
 
 // PRD seção 3: distribuição inicial de status.
 const DISTRIBUICAO_STATUS: Array<[StatusPoste, number]> = [
@@ -39,194 +44,33 @@ function mulberry32(seed: number): () => number {
 
 const rand = mulberry32(20240909);
 
-/** Ruas por bairro, com deslocamento aproximado do centro (em graus). */
-const BAIRROS: Array<{
-  nome: string;
-  dLat: number;
-  dLon: number;
-  ruas: string[];
-}> = [
-  {
-    nome: 'Centro',
-    dLat: 0,
-    dLon: 0,
-    ruas: [
-      'Avenida Goiás',
-      'Rua Itaguari',
-      'Rua 15 de Novembro',
-      'Rua do Comércio',
-      'Praça da Matriz',
-      'Rua São José',
-      'Rua Coronel Ribeiro',
-      'Rua Sete de Setembro',
+/**
+ * Os 248 postes sobre as ruas reais: um a cada 35 m, a partir do centro, com o
+ * bairro definido pela posição (o Centro num raio de 170 m; os outros oito por
+ * direção, a partir do leste no sentido anti-horário).
+ */
+function gerarPostes(): PostePosicionado[] {
+  const { ruas } = JSON.parse(readFileSync(ARQUIVO_RUAS, 'utf8')) as {
+    ruas: RuaOsm[];
+  };
+  return posicionarPostes(ruas, {
+    centro: CENTRO,
+    total: TOTAL_POSTES,
+    espacamentoM: 35,
+    distanciaMinimaM: 20,
+    raioCentroM: 170,
+    bairroCentral: 'Centro',
+    bairrosPorDirecao: [
+      'Setor Leste',
+      'Setor Industrial',
+      'Setor Norte',
+      'Vila Nova',
+      'Setor Oeste',
+      'Residencial Bela Vista',
+      'Setor Sul',
+      'Jardim Primavera',
     ],
-  },
-  {
-    nome: 'Setor Leste',
-    dLat: 0.0035,
-    dLon: 0.006,
-    ruas: [
-      'Rua das Palmeiras',
-      'Rua dos Ipês',
-      'Rua do Cerrado',
-      'Rua Nova Aurora',
-      'Travessa Bela Vista',
-    ],
-  },
-  {
-    nome: 'Setor Oeste',
-    dLat: 0.002,
-    dLon: -0.0065,
-    ruas: [
-      'Rua Anhanguera',
-      'Rua Bandeirantes',
-      'Rua das Acácias',
-      'Rua Santos Dumont',
-      'Rua Rio Vermelho',
-    ],
-  },
-  {
-    nome: 'Setor Norte',
-    dLat: 0.0065,
-    dLon: -0.001,
-    ruas: [
-      'Avenida Brasil',
-      'Rua Tiradentes',
-      'Rua Juscelino Kubitschek',
-      'Rua do Horto',
-      'Rua Pau Brasil',
-    ],
-  },
-  {
-    nome: 'Setor Sul',
-    dLat: -0.006,
-    dLon: 0.001,
-    ruas: [
-      'Rua Padre Cícero',
-      'Rua Monte Alegre',
-      'Rua das Mangueiras',
-      'Rua Boa Esperança',
-      'Rua Jequitibá',
-    ],
-  },
-  {
-    nome: 'Jardim Primavera',
-    dLat: -0.004,
-    dLon: 0.007,
-    ruas: [
-      'Rua das Flores',
-      'Rua Primavera',
-      'Rua dos Girassóis',
-      'Rua Jasmim',
-      'Alameda dos Buritis',
-    ],
-  },
-  {
-    nome: 'Vila Nova',
-    dLat: 0.0045,
-    dLon: -0.005,
-    ruas: [
-      'Rua Projetada A',
-      'Rua Projetada B',
-      'Rua União',
-      'Rua Progresso',
-      'Rua da Saudade',
-    ],
-  },
-  {
-    nome: 'Residencial Bela Vista',
-    dLat: -0.0075,
-    dLon: -0.004,
-    ruas: [
-      'Rua Mirante',
-      'Rua do Horizonte',
-      'Rua da Colina',
-      'Rua Recanto Verde',
-      'Rua Panorama',
-    ],
-  },
-  {
-    nome: 'Setor Industrial',
-    dLat: 0.008,
-    dLon: 0.008,
-    ruas: [
-      'Avenida Perimetral',
-      'Rua das Indústrias',
-      'Rua da Produção',
-      'Via de Acesso GO-070',
-    ],
-  },
-];
-
-interface PosteSeed {
-  codigo: string;
-  endereco: string;
-  bairro: string;
-  latitude: number;
-  longitude: number;
-}
-
-/** Distribui os 248 postes pelas ruas e os posiciona ao longo de cada via. */
-function gerarPostes(): PosteSeed[] {
-  const ruasFlat = BAIRROS.flatMap((b) =>
-    b.ruas.map((rua) => ({ rua, bairro: b.nome, dLat: b.dLat, dLon: b.dLon })),
-  );
-
-  // Peso aleatório por rua para variar a quantidade de postes.
-  const pesos = ruasFlat.map(() => 0.5 + rand());
-  const somaPesos = pesos.reduce((a, b) => a + b, 0);
-
-  const alvo = ruasFlat.map((_, i) =>
-    Math.max(2, Math.round((pesos[i] / somaPesos) * TOTAL_POSTES)),
-  );
-
-  // Ajuste fino para fechar exatamente em TOTAL_POSTES.
-  let total = alvo.reduce((a, b) => a + b, 0);
-  let idx = 0;
-  while (total !== TOTAL_POSTES) {
-    if (total > TOTAL_POSTES && alvo[idx % alvo.length] > 2) {
-      alvo[idx % alvo.length]--;
-      total--;
-    } else if (total < TOTAL_POSTES) {
-      alvo[idx % alvo.length]++;
-      total++;
-    }
-    idx++;
-  }
-
-  const postes: PosteSeed[] = [];
-  let numero = 0;
-
-  ruasFlat.forEach((via, i) => {
-    const qtd = alvo[i];
-    // Orientação da via (N-S ou L-O) e ponto inicial jitterado.
-    const horizontal = rand() > 0.5;
-    const baseLat =
-      CENTRO_LAT + via.dLat * RAIO_ESCALA + (rand() - 0.5) * 0.0008;
-    const baseLon =
-      CENTRO_LON + via.dLon * RAIO_ESCALA + (rand() - 0.5) * 0.0008;
-    const passo = 0.00028; // ~30 m entre postes
-
-    for (let k = 0; k < qtd; k++) {
-      numero++;
-      const lat = horizontal
-        ? baseLat + (rand() - 0.5) * 0.00012
-        : baseLat + (k - qtd / 2) * passo;
-      const lon = horizontal
-        ? baseLon + (k - qtd / 2) * passo
-        : baseLon + (rand() - 0.5) * 0.00012;
-
-      postes.push({
-        codigo: `P-${String(numero).padStart(3, '0')}`,
-        endereco: `${via.rua}, ${100 + k * 12}`,
-        bairro: via.bairro,
-        latitude: Number(lat.toFixed(6)),
-        longitude: Number(lon.toFixed(6)),
-      });
-    }
   });
-
-  return postes;
 }
 
 /** Embaralhamento determinístico (Fisher–Yates com o mesmo PRNG). */
