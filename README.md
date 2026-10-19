@@ -124,6 +124,12 @@ SIMULADOR_INTERVALO_TELEMETRIA_MS=3000 bun run start:dev
 | `bun run db:backfill` | Histórico: telemetria/eventos (`DIAS_RAW`) + agregados diários (`DIAS_AGREGADO`) |
 | `bun run db:reset` | Recria o banco do zero e roda o seed |
 | `bun run build` / `bun run lint` | Compila para `dist/` · oxlint |
+| `bun run test` | Testes unitários (Jest) |
+
+Os testes rodam no **Node ≥ 24.9** com `--experimental-vm-modules` (já embutido nos
+scripts `test*`): o NestJS 12 é distribuído como ES Module, e o Jest só carrega ES
+Module a partir de código CommonJS com essa opção. Sem Node instalado, rode num
+container: `docker run --rm -v "$PWD":/app -w /app node:24-slim node --experimental-vm-modules node_modules/jest/bin/jest.js`.
 
 ## Modelo de dados
 
