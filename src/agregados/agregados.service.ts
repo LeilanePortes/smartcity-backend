@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { Prisma, StatusPoste } from '@prisma/client';
 import { TARIFA_B4A_KWH } from '../common/constants';
@@ -10,6 +10,7 @@ import {
   PeriodoKpi,
 } from '../common/periodo';
 import { PrismaService } from '../prisma/prisma.service';
+import { diasFechadosRecentes, diasSemAgregado } from './recuperacao';
 
 const MS_DIA = 24 * 60 * 60_000;
 
@@ -25,7 +26,7 @@ interface BucketRaw {
 }
 
 @Injectable()
-export class AgregadosService {
+export class AgregadosService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AgregadosService.name);
 
   constructor(private readonly prisma: PrismaService) {}
@@ -241,6 +242,49 @@ export class AgregadosService {
       (await this.rollupDia(anteontem)) + (await this.rollupDia(ontem));
     if (total)
       this.logger.log(`Consolidação diária: ${total} agregados gravados.`);
+  }
+
+  /**
+   * Ao subir, consolida os dias fechados que ficaram sem agregado — o cron das
+   * 00:15 não roda com a API desligada (ex.: o computador desligado de
+   * madrugada), e sem o agregado o KPI do dia aparece zerado. Roda em segundo
+   * plano para não atrasar a inicialização.
+   */
+  onApplicationBootstrap(): void {
+    void this.recuperarDiasFaltantes().catch((erro: Error) =>
+      this.logger.error(`Falha ao recuperar agregados: ${erro.message}`),
+    );
+  }
+
+  /** Consolida os últimos dias fechados que estão sem agregado da rede. */
+  async recuperarDiasFaltantes(agora = new Date()): Promise<Date[]> {
+    const dias = diasFechadosRecentes(agora);
+    const existentes = await this.prisma.agregadoConsumo.findMany({
+      where: {
+        posteId: null,
+        periodo: 'DIA',
+        periodoInicio: { in: dias },
+      },
+      select: { periodoInicio: true },
+    });
+    const faltantes = diasSemAgregado(
+      dias,
+      new Set(existentes.map((e) => e.periodoInicio.getTime())),
+    );
+
+    const recuperados: Date[] = [];
+    for (const dia of faltantes) {
+      // Dia sem leitura nenhuma (ex.: antes do histórico) não gera agregado.
+      if (await this.rollupDia(dia)) recuperados.push(dia);
+    }
+    if (recuperados.length) {
+      this.logger.log(
+        `Agregados recuperados na inicialização: ${recuperados
+          .map((d) => d.toISOString().slice(0, 10))
+          .join(', ')}`,
+      );
+    }
+    return recuperados;
   }
 
   /** Consolida um dia (UTC) em AgregadoConsumo. Idempotente. */
