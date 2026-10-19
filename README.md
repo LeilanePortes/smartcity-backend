@@ -204,7 +204,7 @@ Custo = consumo × tarifa **B4a** (R$ 0,58/kWh), exposta em `tarifa` na resposta
 
 As janelas de período são blocos de N dias inteiros (UTC) terminando à meia-noite
 de hoje — período cheio vs. período cheio. O consumo consolidado vem de
-`AgregadoConsumo` (rollup diário: cron às 00:15 + `db:backfill`); o dia corrente
+`AgregadoConsumo` (rollup diário: cron às 00:15 UTC + `db:backfill`; ao subir, a API também consolida os últimos 7 dias fechados que ficaram sem agregado, caso o cron não tenha rodado com ela desligada); o dia corrente
 é calculado ao vivo da telemetria.
 
 ## Tempo real — WebSocket (Fase 5)
