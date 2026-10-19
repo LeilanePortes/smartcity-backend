@@ -642,7 +642,7 @@ Requer `modo: "camadas"`. Para acompanhar, consulte a cada 5–10 s.
 | `implantacao.proximaAvaliacaoEm` | string (ISO) \| null | Próximo portão de decisão |
 | `implantacao.aparelhos` | object | `elegiveis`, `enviados`, `instalados`, `falhas`, `pendentes`, `revertidos` |
 | `implantacao.grupos.canario` / `controle` | string[] | Códigos dos postes: quem já está na versão nova × amostra que segue na antiga |
-| `implantacao.metricas` | object \| null | Do último portão: `canario` e `controle` (`{ aparelhos, reportaram, consumoNormalizadoMedio, consumoAltoPct }`), `referenciaConsumo`, `razaoConsumo` |
+| `implantacao.metricas` | object \| null | Do último portão (`null` até o 1º portão): `canario` e `controle` (`{ aparelhos, reportaram, consumoNormalizadoMedio, consumoAltoPct }`), `referenciaConsumo`, `razaoConsumo`. `controle` vem `null` na onda de 100% (não sobra ninguém na versão antiga): aí `referenciaConsumo` é a linha de base medida no início da implantação. `consumoNormalizadoMedio`, `referenciaConsumo` e `razaoConsumo` podem vir `null` sem dados suficientes |
 | `implantacao.falhas[]` | `{ codigo, motivo }` | Até 20 falhas de instalação |
 | `implantacao.decisoes[]` | array | Histórico dos portões: `{ em, ondaPct, decisao, motivo, razaoConsumo }`, `decisao` = `AVANCAR` \| `ESTENDER` \| `CONCLUIR` \| `REVERTER` |
 
