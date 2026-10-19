@@ -144,9 +144,20 @@ Enums: `StatusPoste`, `TipoEventoSensor`, `SentidoVeiculo`, `PeriodoAgregado`.
 
 ## Seed
 
-`prisma/seed.ts` gera de forma **determinística** (PRNG com seed fixa) os 248 postes
-distribuídos por 9 bairros de Itaguari, com endereços e coordenadas plausíveis em torno
-do centro da cidade. A distribuição inicial de status segue o PRD:
+`prisma/seed.ts` gera de forma **determinística** os 248 postes **sobre as ruas reais**
+do centro de Itaguari: um poste a cada 35 m ao longo das ruas com nome, a partir do centro
+(raio de ~450 m), sem duplicar cruzamentos. O endereço é a rua real e a distância ao longo
+dela (ex.: "Avenida Goiás, 158"). O bairro vem da posição: "Centro" num raio de 170 m e os
+outros oito por direção (Setor Leste, Setor Industrial, Setor Norte, Vila Nova, Setor Oeste,
+Residencial Bela Vista, Setor Sul e Jardim Primavera, a partir do leste no sentido
+anti-horário). A regra está em [`prisma/dados/posicionar-postes.ts`](./prisma/dados/posicionar-postes.ts).
+
+O traçado das ruas fica em `prisma/dados/ruas-itaguari.json`, baixado do OpenStreetMap
+(Overpass API) por `bun run prisma/dados/baixar-ruas.ts` — o seed não depende de
+internet. Dados de ruas © [colaboradores do OpenStreetMap](https://www.openstreetmap.org/copyright),
+licença ODbL.
+
+A distribuição inicial de status segue o PRD:
 
 | Status | Qtd |
 |---|---|
