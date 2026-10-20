@@ -1,12 +1,18 @@
-import { ValidationPipe } from '@nestjs/common';
+import { RequestMethod, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { PREFIXO_API } from './common/constants';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.enableCors();
+  // API REST versionada (RF-APP-01): tudo sob /api/v1. A raiz fica de fora
+  // porque serve de ponteiro para a documentação e de verificação de saúde.
+  app.setGlobalPrefix(PREFIXO_API, {
+    exclude: [{ path: '/', method: RequestMethod.GET }],
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       transform: true,

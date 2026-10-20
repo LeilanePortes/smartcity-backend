@@ -1,26 +1,27 @@
 # Exemplos de requisição — REST Client (VS Code) / IntelliJ HTTP Client.
 # Rode a API com `bun run start:dev`.
 
-@host = http://localhost:3000
+@raiz = http://localhost:3000
+@host = {{raiz}}/api/v1
 # Troque por um id real vindo de GET /postes:
 @posteId = COLE_UM_ID_AQUI
 
-### Info + documentação
-GET {{host}}/
+### Info + documentação (única rota fora de /api/v1)
+GET {{raiz}}/
 
-### Swagger UI  →  abrir {{host}}/docs no navegador
-GET {{host}}/docs-json
+### Swagger UI  →  abrir {{raiz}}/docs no navegador
+GET {{raiz}}/docs-json
 
 ### --- Postes ---
 
 ### Lista completa (mapa)
-GET {{host}}/postes
+GET {{host}}/postes?tamanho=500
 
 ### Filtro por status
 GET {{host}}/postes?status=FALHA_OFFLINE
 
 ### Busca por rua/bairro
-GET {{host}}/postes?busca=centro
+GET {{host}}/postes?busca=centro&ordenar=-consumoInstantaneoKw
 
 ### Detalhe
 GET {{host}}/postes/{{posteId}}
@@ -29,7 +30,7 @@ GET {{host}}/postes/{{posteId}}
 GET {{host}}/postes/{{posteId}}/telemetria?periodo=semana
 
 ### Log do sensor 360°
-GET {{host}}/postes/{{posteId}}/eventos?limite=10
+GET {{host}}/postes/{{posteId}}/eventos?tamanho=10
 
 ### Agendar manutenção
 PATCH {{host}}/postes/{{posteId}}/status
@@ -49,7 +50,7 @@ Content-Type: application/json
 GET {{host}}/kpis?periodo=mes
 
 ### Ranking de maior consumo
-GET {{host}}/kpis/maior-consumo?periodo=semana&limite=5
+GET {{host}}/kpis/maior-consumo?periodo=semana&tamanho=5
 
 ### Postes por status
 GET {{host}}/kpis/postes-por-status
@@ -72,3 +73,11 @@ Content-Type: application/json
 
 ### Reverter a implantação em andamento
 POST {{host}}/ota/reverter
+
+### --- Contratos ---
+
+### Versões do contrato canônico
+GET {{host}}/contratos
+
+### JSON Schema da mensagem canônica
+GET {{host}}/contratos/v1/mensagem.schema.json

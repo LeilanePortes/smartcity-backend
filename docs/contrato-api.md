@@ -3,7 +3,8 @@
 Referência de payloads para o time mobile (Flutter). Todos os exemplos abaixo
 foram capturados da API rodando com o seed + `db:backfill` padrão.
 
-- **Base URL:** `http://localhost:3000` (sem prefixo, sem autenticação)
+- **Base URL:** `http://localhost:3000/api/v1` (API versionada; os caminhos abaixo são relativos a ela; sem autenticação por enquanto)
+- **Listagens:** `?pagina=&tamanho=&ordenar=` e envelope `{ itens, pagina, tamanho, total, totalPaginas }` (ver Paginação)
 - **Swagger / OpenAPI:** `GET /docs` (UI) · `GET /docs-json` (JSON)
 - **WebSocket:** `ws://localhost:3000/tempo-real` (Socket.IO) — ver o fim deste doc
 - **Datas:** ISO 8601 em UTC (`2026-09-10T16:04:34.453Z`)
@@ -25,22 +26,36 @@ Enums:
 
 ---
 
+## Paginação
+
+Toda listagem aceita `pagina` (≥ 1, padrão 1), `tamanho` (1–500, padrão 50; ranking: 5)
+e `ordenar` (campo do endpoint, `-` na frente = decrescente) e responde:
+
+```jsonc
+{ "itens": [ /* … */ ], "pagina": 1, "tamanho": 50, "total": 248, "totalPaginas": 5 }
+```
+
+Campo de `ordenar` fora da lista do endpoint → `400` com os campos aceitos.
+
+---
+
 ## Postes
 
 ### `GET /postes`
 
-Lista para o mapa. Query (todos opcionais):
+Lista para o mapa, paginada (o mapa inteiro: `?tamanho=500`). Query (todos opcionais):
 
 | Param | Valores | Efeito |
 |---|---|---|
 | `status` | um `StatusPoste` | filtra por status |
 | `busca` | texto (≤120) | casa rua **ou** bairro, sem distinção de acento/caixa |
+| `pagina` · `tamanho` | números | paginação |
+| `ordenar` | `codigo` (padrão) · `bairro` · `endereco` · `status` · `luminosidadeAtual` · `consumoInstantaneoKw` · `ultimaLeituraEm` | `-` = decrescente |
 
 ```jsonc
-// GET /postes?status=CONSUMO_ALTO
+// GET /postes?status=CONSUMO_ALTO&tamanho=500
 {
-  "total": 9,
-  "postes": [
+  "itens": [
     {
       "id": "4d1fc7c5-a83d-44dd-ba74-c137bee57a3b",
       "codigo": "P-009",
@@ -54,7 +69,11 @@ Lista para o mapa. Query (todos opcionais):
       "ultimaLeituraEm": "2026-09-10T15:54:50.923Z"
     }
     // ...
-  ]
+  ],
+  "pagina": 1,
+  "tamanho": 500,
+  "total": 9,
+  "totalPaginas": 1
 }
 ```
 
@@ -112,14 +131,15 @@ mesmas horas em que a luz esteve acesa.
 }
 ```
 
-### `GET /postes/:id/eventos?limite=`
+### `GET /postes/:id/eventos?pagina=&tamanho=&ordenar=`
 
-Log do sensor 360°, mais recentes primeiro. `limite` 1–200 (default 50).
-`sentido` pode ser `null`.
+Log do sensor 360°, paginado; padrão: mais recentes primeiro (`ordenar=-timestamp`;
+também `timestamp` e `tipo`). `sentido` pode ser `null`.
 
 ```jsonc
-// GET /postes/4d1fc7c5-.../eventos?limite=3
-[
+// GET /postes/4d1fc7c5-.../eventos?tamanho=2
+{
+  "itens": [
   {
     "id": "601391ee-c5f0-4e9e-963d-ee90a48d0040",
     "tipo": "RETORNO_AO_PISO",
@@ -134,7 +154,12 @@ Log do sensor 360°, mais recentes primeiro. `limite` 1–200 (default 50).
     "luminosidadeResultante": 100,
     "timestamp": "2026-09-10T13:20:00.000Z"
   }
-]
+  ],
+  "pagina": 1,
+  "tamanho": 2,
+  "total": 106,
+  "totalPaginas": 53
+}
 ```
 
 ### `PATCH /postes/:id/status`
@@ -198,17 +223,18 @@ difundida pelo WebSocket.
 Para `periodo=ano`, `serie.granularidade` é `"mes"` e há 13 buckets em cada
 série (a janela de 365 dias toca 13 meses de calendário).
 
-### `GET /kpis/maior-consumo?periodo=&limite=`
+### `GET /kpis/maior-consumo?periodo=&pagina=&tamanho=&ordenar=`
 
-Ranking dos postes de maior consumo no período. `limite` 1–20 (default 5).
+Ranking dos postes de maior consumo no período, paginado (padrão: top 5;
+`ordenar=-consumoKwh` ou `consumoKwh`). `posicao` é absoluta, também nas páginas seguintes.
 
 ```jsonc
-// GET /kpis/maior-consumo?periodo=semana&limite=5
+// GET /kpis/maior-consumo?periodo=semana
 {
   "periodo": "semana",
   "inicio": "2026-09-03T00:00:00.000Z",
   "fim": "2026-09-10T00:00:00.000Z",
-  "ranking": [
+  "itens": [
     {
       "posicao": 1,
       "posteId": "86211274-c46c-4d25-a5b3-34d152afb156",
@@ -219,7 +245,11 @@ Ranking dos postes de maior consumo no período. `limite` 1–20 (default 5).
       "custoReais": 13.55
     }
     // ...
-  ]
+  ],
+  "pagina": 1,
+  "tamanho": 5,
+  "total": 248,
+  "totalPaginas": 50
 }
 ```
 
