@@ -8,8 +8,8 @@ import {
   MsgSaude,
   MsgTelemetria,
   ResumoPoste,
-  topicoPoste,
 } from '../common/topicos-mqtt';
+import { DOMINIO_ILUMINACAO, topicoDispositivo } from '../common/contrato';
 
 /// Regras do gateway (subconjunto de `FogConfig`).
 export interface RegrasFog {
@@ -193,14 +193,24 @@ export class GatewayBairro {
     p.normalizados = [];
     // O poste acabou de mudar de condição: dá a ele o prazo inteiro para reportar.
     p.ultimaTelemetriaMs = agoraMs;
-    return topicoPoste(this.bairro, codigo, 'comando');
+    return topicoDispositivo(
+      this.bairro,
+      DOMINIO_ILUMINACAO,
+      codigo,
+      'comando',
+    );
   }
 
-  /** Tópico de um poste deste bairro no campo, ou null se ele não é daqui. */
-  topicoNoCampo(codigo: string, grandeza: 'ota'): string | null {
+  /** Tópico de comando de um poste deste bairro, ou null se ele não é daqui. */
+  topicoComando(codigo: string): string | null {
     return this.postes.has(codigo)
-      ? topicoPoste(this.bairro, codigo, grandeza)
+      ? topicoDispositivo(this.bairro, DOMINIO_ILUMINACAO, codigo, 'comando')
       : null;
+  }
+
+  /** Id do poste no cadastro (a mensagem canônica traz só o código). */
+  idDe(codigo: string): string | null {
+    return this.postes.get(codigo)?.id ?? null;
   }
 
   /** Fecha a janela de agregação e devolve o resumo do bairro. */

@@ -1,15 +1,29 @@
 import { StatusPoste } from '@prisma/client';
 import { perfilFirmware } from '../common/firmware';
-import type { PosteProvisionado } from '../common/provisionamento';
 import {
-  MsgComando,
+  COMANDO_ATUALIZAR_FIRMWARE,
+  eventoCanonico,
+  lerComando,
+  LocalPoste,
+  otaResultadoCanonico,
+  saudeCanonica,
+  telemetriaCanonica,
+} from '../common/codec-iluminacao';
+import {
+  DOMINIO_ILUMINACAO,
+  MensagemCanonica,
+  parseTopicoDispositivo,
+  slug,
+  TipoMensagem,
+  topicoDispositivo,
+  validarMensagem,
+} from '../common/contrato';
+import type { PosteProvisionado } from '../common/provisionamento';
+import type {
   MsgEvento,
-  MsgOta,
   MsgOtaResultado,
   MsgSaude,
   MsgTelemetria,
-  parseTopicoPoste,
-  topicoPoste,
 } from '../common/topicos-mqtt';
 import {
   aplicarStatusManual,
@@ -33,6 +47,7 @@ export interface Publicacao {
 interface Dispositivo {
   estado: EstadoPoste;
   bairro: string;
+  local: LocalPoste;
   ligadoEmMs: number;
   versaoFirmware: string;
   reinicios: number;
@@ -57,6 +72,10 @@ const entre = (min: number, max: number): number =>
  * gasta mais (CONSUMO_ALTO) e um poste em falha simplesmente para de publicar
  * (FALHA_OFFLINE), que é como um aparelho real some da rede.
  *
+ * Tudo sai no contrato canônico (`contrato.ts`): tópico
+ * `itaguari/<bairro>/iluminacao/<poste>/<tipo>` e a mensagem com `id_mensagem`,
+ * `medidas` em UCUM e o local (bairro, rua e coordenadas GeoJSON).
+ *
  * OTA: cada poste roda uma versão de firmware. Ao receber uma ordem de
  * atualização ele grava a versão nova, reinicia (fica mudo alguns segundos) e
  * faz o autoteste; se falhar, volta sozinho para a anterior (partições A/B).
@@ -79,6 +98,13 @@ export class CampoEdge {
       const d: Dispositivo = {
         estado: estadoInicial(p),
         bairro: p.bairro,
+        local: {
+          site: slug(p.bairro),
+          ...(p.endereco ? { area: slug(p.endereco.split(',')[0]) } : {}),
+          ...(p.latitude !== undefined && p.longitude !== undefined
+            ? { latitude: p.latitude, longitude: p.longitude }
+            : {}),
+        },
         ligadoEmMs: agoraMs,
         versaoFirmware,
         reinicios: 0,
@@ -117,7 +143,7 @@ export class CampoEdge {
         luminosidadeResultante: evento.luminosidadeResultante,
         em: agora.toISOString(),
       };
-      saida.push(this.publicacao(d, 'evento', msg, 1));
+      saida.push(this.publicacao(d, 'evento', eventoCanonico(msg, d.local), 1));
     }
     return saida;
   }
@@ -143,7 +169,9 @@ export class CampoEdge {
         luminosidadePct: leitura.luminosidadePct,
         em: agora.toISOString(),
       };
-      saida.push(this.publicacao(d, 'telemetria', msg, 0));
+      saida.push(
+        this.publicacao(d, 'telemetria', telemetriaCanonica(msg, d.local), 0),
+      );
     }
     return saida;
   }
@@ -165,7 +193,7 @@ export class CampoEdge {
         memoriaLivreKb: Math.round(entre(170, 190)),
         em: agora.toISOString(),
       };
-      saida.push(this.publicacao(d, 'saude', msg, 0));
+      saida.push(this.publicacao(d, 'estado', saudeCanonica(msg, d.local), 0));
     }
     return saida;
   }
@@ -190,60 +218,40 @@ export class CampoEdge {
   }
 
   /**
-   * Comando recebido do fog/nuvem (ex.: técnico colocou o poste em manutenção).
-   * Devolve o código do poste afetado, ou null se a mensagem for inválida.
+   * Comando recebido do fog (mensagem canônica no tópico `.../comando`): o
+   * técnico colocou o poste em manutenção ou a nuvem mandou atualizar o
+   * firmware. Devolve o poste e o que foi feito, ou null se a mensagem foi
+   * ignorada (fora do contrato, poste desconhecido, fora do ar ou já instalando).
    */
-  aplicarComando(topico: string, payload: string): string | null {
-    const alvo = parseTopicoPoste(topico);
-    if (!alvo || alvo.grandeza !== 'comando') return null;
-    const d = this.porCodigo.get(alvo.codigo);
-    if (!d) return null;
-
-    let msg: Partial<MsgComando>;
-    try {
-      msg = JSON.parse(payload) as Partial<MsgComando>;
-    } catch {
-      return null;
-    }
-    if (
-      msg.status !== StatusPoste.MANUTENCAO &&
-      msg.status !== StatusPoste.NORMAL
-    ) {
-      return null;
-    }
-    aplicarStatusManual(d.estado, msg.status);
-    return d.estado.codigo;
-  }
-
-  /**
-   * Ordem de OTA vinda do fog. O aparelho começa a instalar e fica mudo até
-   * `tickOta` concluir. Devolve o código do poste, ou null se a ordem foi
-   * ignorada (mensagem inválida, poste fora do ar ou já instalando).
-   */
-  aplicarOta(
+  receberComando(
     topico: string,
     payload: string,
     agoraMs = Date.now(),
-  ): string | null {
-    const alvo = parseTopicoPoste(topico);
-    if (!alvo || alvo.grandeza !== 'ota') return null;
-    const d = this.porCodigo.get(alvo.codigo);
-    if (!d || d.instalacao) return null;
-    if (d.estado.status === StatusPoste.FALHA_OFFLINE) return null;
+  ): { codigo: string; acao: 'status' | 'ota'; valor: string } | null {
+    const alvo = parseTopicoDispositivo(topico);
+    if (!alvo || alvo.tipo !== 'comando') return null;
+    if (alvo.dominio !== DOMINIO_ILUMINACAO) return null;
+    const d = this.porCodigo.get(alvo.dispositivo);
+    if (!d) return null;
 
-    let msg: Partial<MsgOta>;
-    try {
-      msg = JSON.parse(payload) as Partial<MsgOta>;
-    } catch {
-      return null;
+    const validacao = validarMensagem(payload);
+    if (!validacao.valida) return null;
+    const comando = lerComando(validacao.mensagem);
+    if (!comando) return null;
+
+    if (comando.nome === COMANDO_ATUALIZAR_FIRMWARE) {
+      if (d.instalacao || d.estado.status === StatusPoste.FALHA_OFFLINE) {
+        return null;
+      }
+      d.instalacao = {
+        versaoAlvo: comando.versao,
+        ateMs: agoraMs + this.duracaoOtaMs,
+      };
+      return { codigo: d.estado.codigo, acao: 'ota', valor: comando.versao };
     }
-    if (typeof msg.versao !== 'string' || !msg.versao) return null;
 
-    d.instalacao = {
-      versaoAlvo: msg.versao,
-      ateMs: agoraMs + this.duracaoOtaMs,
-    };
-    return d.estado.codigo;
+    aplicarStatusManual(d.estado, comando.status);
+    return { codigo: d.estado.codigo, acao: 'status', valor: comando.status };
   }
 
   /** Conclui as instalações cujo reinício terminou e publica o resultado. */
@@ -273,19 +281,26 @@ export class CampoEdge {
           : 'instalada e confirmada no autoteste',
         em: agora.toISOString(),
       };
-      saida.push(this.publicacao(d, 'ota-resultado', msg, 1));
+      saida.push(
+        this.publicacao(d, 'evento', otaResultadoCanonico(msg, d.local), 1),
+      );
     }
     return saida;
   }
 
   private publicacao(
     d: Dispositivo,
-    grandeza: 'telemetria' | 'evento' | 'saude' | 'ota-resultado',
-    msg: object,
+    tipo: TipoMensagem,
+    msg: MensagemCanonica,
     qos: 0 | 1,
   ): Publicacao {
     return {
-      topico: topicoPoste(d.bairro, d.estado.codigo, grandeza),
+      topico: topicoDispositivo(
+        d.bairro,
+        DOMINIO_ILUMINACAO,
+        d.estado.codigo,
+        tipo,
+      ),
       payload: JSON.stringify(msg),
       qos,
     };

@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartcity.itaguari/contratos/v1/mensagem.schema.json",
+  "title": "Mensagem canônica da Plataforma IoT — versão 1.0",
+  "description": "Formato único em que telemetria, eventos, estado e comandos circulam na plataforma, em qualquer domínio. Datas em UTC (ISO 8601); unidades no código UCUM; coordenadas GeoJSON na ordem longitude, latitude.",
+  "type": "object",
+  "required": [
+    "versao",
+    "id_mensagem",
+    "dispositivo",
+    "tipo",
+    "timestamp"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "versao": {
+      "description": "Versão do contrato; permite evoluir o formato sem quebrar quem usa a versão anterior.",
+      "const": "1.0"
+    },
+    "id_mensagem": {
+      "description": "UUID gerado na origem; usado para descartar duplicatas, inclusive na sincronização da borda.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "dispositivo": {
+      "description": "Código do dispositivo no cadastro da plataforma (ex.: P-042).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "tipo": {
+      "description": "Natureza da mensagem; define qual bloco de conteúdo é obrigatório.",
+      "enum": [
+        "telemetria",
+        "evento",
+        "estado",
+        "comando"
+      ]
+    },
+    "timestamp": {
+      "description": "Momento da medição ou do fato, em UTC. A plataforma ordena pelo horário da medição, não pela chegada.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "via": {
+      "description": "Opcional: nó de borda ou gateway pelo qual a mensagem passou (rastreabilidade).",
+      "type": "string",
+      "minLength": 1
+    },
+    "local": {
+      "description": "Opcional: se omitido, vale o local cadastrado do dispositivo.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "site": {
+          "type": "string",
+          "minLength": 1
+        },
+        "area": {
+          "type": "string",
+          "minLength": 1
+        },
+        "geo": {
+          "$ref": "#/$defs/pontoGeoJson"
+        }
+      }
+    },
+    "medidas": {
+      "description": "Grandezas do catálogo, com unidade UCUM.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/medida"
+      }
+    },
+    "evento": {
+      "type": "object",
+      "required": [
+        "nome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "nome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dados": {
+          "type": "object"
+        }
+      }
+    },
+    "estado": {
+      "description": "Estado relatado pelo dispositivo (gêmeo): versão de firmware, saúde etc.",
+      "type": "object",
+      "minProperties": 1
+    },
+    "comando": {
+      "type": "object",
+      "required": [
+        "nome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "nome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parametros": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "tipo"
+        ],
+        "properties": {
+          "tipo": {
+            "const": "telemetria"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "medidas"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "tipo"
+        ],
+        "properties": {
+          "tipo": {
+            "const": "evento"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "evento"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "tipo"
+        ],
+        "properties": {
+          "tipo": {
+            "const": "estado"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "estado"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "tipo"
+        ],
+        "properties": {
+          "tipo": {
+            "const": "comando"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "comando"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "medida": {
+      "type": "object",
+      "required": [
+        "grandeza",
+        "valor",
+        "unidade"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "grandeza": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "valor": {
+          "type": "number"
+        },
+        "unidade": {
+          "description": "Código UCUM (ex.: kW, %, Cel, ug/m3, V).",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pontoGeoJson": {
+      "description": "GeoJSON Point (RFC 7946): [longitude, latitude].",
+      "type": "object",
+      "required": [
+        "type",
+        "coordinates"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "Point"
+        },
+        "coordinates": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            {
+              "type": "number",
+              "minimum": -90,
+              "maximum": 90
+            }
+          ],
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  }
+}

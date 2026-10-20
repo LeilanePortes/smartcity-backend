@@ -1,9 +1,10 @@
 import { connect, MqttClient } from 'mqtt';
 import {
-  assinaturaTodosPostes,
-  MsgEdgeEstado,
-  TOPICO_EDGE_ESTADO,
-} from '../common/topicos-mqtt';
+  assinaturaDominio,
+  DOMINIO_ILUMINACAO,
+  MensagemCanonica,
+} from '../common/contrato';
+import { MsgEdgeEstado, TOPICO_EDGE_ESTADO } from '../common/topicos-mqtt';
 import { provisionar } from '../common/provisionamento';
 import { CampoEdge, Publicacao } from './campo';
 import { EdgeConfig, lerEdgeConfig } from './edge.config';
@@ -14,7 +15,8 @@ import { EdgeConfig, lerEdgeConfig } from './edge.config';
  *   bun run dist/edge/main.js      (no container `edge` do docker-compose)
  *
  * Os dispositivos são multiplexados numa única conexão com o broker; cada um
- * publica nos próprios tópicos (itaguari/iluminacao/<bairro>/<poste>/...).
+ * publica nos próprios tópicos (itaguari/<bairro>/iluminacao/<poste>/<tipo>),
+ * sempre com a mensagem canônica do contrato v1.0.
  */
 
 const log = (msg: string): void => console.log(`[edge] ${msg}`);
@@ -88,23 +90,21 @@ function iniciar(config: EdgeConfig, campo: CampoEdge): void {
       qos: 1,
       retain: true,
     });
-    cliente.subscribe(
-      [assinaturaTodosPostes('comando'), assinaturaTodosPostes('ota')],
-      { qos: 1 },
-    );
+    cliente.subscribe(assinaturaDominio(DOMINIO_ILUMINACAO, 'comando'), {
+      qos: 1,
+    });
   });
   cliente.on('reconnect', () => log('reconectando ao broker...'));
   cliente.on('error', (erro) => log(`erro MQTT: ${erro.message}`));
 
   cliente.on('message', (topico, payload) => {
-    const texto = payload.toString();
-    if (topico.endsWith('/ota')) {
-      const codigo = campo.aplicarOta(topico, texto);
-      if (codigo) log(`OTA recebida em ${codigo}: ${texto} — reiniciando`);
-      return;
-    }
-    const codigo = campo.aplicarComando(topico, texto);
-    if (codigo) log(`comando aplicado em ${codigo}: ${texto}`);
+    const r = campo.receberComando(topico, payload.toString());
+    if (!r) return;
+    log(
+      r.acao === 'ota'
+        ? `OTA recebida em ${r.codigo}: versão ${r.valor} — reiniciando`
+        : `comando aplicado em ${r.codigo}: status ${r.valor}`,
+    );
   });
 
   const publicar = (grandeza: Grandeza, lote: Publicacao[]): void => {
@@ -133,13 +133,10 @@ function iniciar(config: EdgeConfig, campo: CampoEdge): void {
     publicar('evento', campo.tickSensores());
     const resultados = campo.tickOta();
     for (const r of resultados) {
-      const msg = JSON.parse(r.payload) as {
-        codigo: string;
-        versaoAtual: string;
-        sucesso: boolean;
-      };
+      const msg = JSON.parse(r.payload) as MensagemCanonica;
+      const dados = msg.evento?.dados ?? {};
       log(
-        `OTA ${msg.codigo}: ${msg.sucesso ? 'instalada' : 'ROLLBACK'} → rodando ${msg.versaoAtual}`,
+        `OTA ${msg.dispositivo}: ${dados.sucesso ? 'instalada' : 'ROLLBACK'} → rodando ${String(dados.versaoAtual)}`,
       );
     }
     publicar('ota', resultados);
