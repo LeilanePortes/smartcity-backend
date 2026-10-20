@@ -283,26 +283,38 @@ docker compose up -d --force-recreate --no-deps app                      # volta
 docker compose up -d --force-recreate --no-deps edge fog                 # reprovisionam com os IDs novos
 ```
 
-**Tópicos** — padrão `organização/área/dispositivo/grandeza`
+**Contrato canônico v1.0** ([`contratos/`](./contratos/), publicado em `GET /contratos`):
+toda mensagem de dispositivo segue o JSON Schema
+[`contratos/v1/mensagem.schema.json`](./contratos/v1/mensagem.schema.json) — `versao`,
+`id_mensagem` (UUID), `dispositivo`, `tipo` (telemetria · evento · estado · comando),
+`timestamp` (UTC), `via`, `local` (site, área e ponto GeoJSON) e `medidas[]` com unidade
+UCUM — e os tópicos estão descritos em AsyncAPI 3
+([`contratos/v1/asyncapi.yaml`](./contratos/v1/asyncapi.yaml)). O fog valida cada mensagem
+do campo contra o schema e descarta (e conta) as que estão fora do contrato. Os nomes do
+domínio iluminação (grandezas `potencia` em kW e `luminosidade` em %, eventos e comandos)
+ficam em [`src/common/codec-iluminacao.ts`](./src/common/codec-iluminacao.ts), fora do núcleo.
+
+**Tópicos** — padrão `{inquilino}/{site}/{dominio}/{dispositivo}/{tipo}` do documento de requisitos
 ([`src/common/topicos-mqtt.ts`](./src/common/topicos-mqtt.ts)):
 
 | Tópico | Sentido | QoS | Quando |
 |---|---|---|---|
-| `itaguari/iluminacao/<bairro>/<poste>/telemetria` | edge → | 0 | a cada 10 s: `consumoKw`, `luminosidadePct` |
-| `itaguari/iluminacao/<bairro>/<poste>/evento` | edge → | 1 | na hora: `VEICULO_DETECTADO` / `RETORNO_AO_PISO` |
-| `itaguari/iluminacao/<bairro>/<poste>/saude` | edge → | 0 | a cada 30 s: `versaoFirmware`, `uptimeS`, `rssiDbm`, `memoriaLivreKb` |
-| `itaguari/iluminacao/<bairro>/<poste>/comando` | → edge | 1 | `{ "status": "MANUTENCAO" \| "NORMAL" }` |
-| `itaguari/iluminacao/_edge/estado` | edge → | 1 (retido) | presença do campo; *Last Will* publica `online: false` se ele cair |
+| `itaguari/<bairro>/iluminacao/<poste>/telemetria` | edge → | 0 | a cada 10 s: medidas `potencia` (kW) e `luminosidade` (%) |
+| `itaguari/<bairro>/iluminacao/<poste>/evento` | edge → | 1 | na hora: `VEICULO_DETECTADO` / `RETORNO_AO_PISO`; `ota_resultado` após uma atualização |
+| `itaguari/<bairro>/iluminacao/<poste>/estado` | edge → | 0 | a cada 30 s: `versaoFirmware`, `uptimeS`, `reinicios24h`, `rssiDbm`, `memoriaLivreKb` |
+| `itaguari/<bairro>/iluminacao/<poste>/comando` | → edge | 1 | `definir_status` (`MANUTENCAO` \| `NORMAL`) e `atualizar_firmware` (`versao`) |
+| `itaguari/_edge/estado` | edge → | 1 (retido) | presença do campo; *Last Will* publica `online: false` se ele cair |
 | `itaguari/nuvem/<bairro>/resumo` | fog → nuvem | 1 | a cada minuto: por poste, status, média de consumo/luminosidade, energia (kWh), versão de firmware |
 | `itaguari/nuvem/<bairro>/evento` | fog → nuvem | 1 | na hora: evento do sensor repassado com o bairro |
 | `itaguari/nuvem/<bairro>/alerta` | fog → nuvem | 1 | na hora: mudança de status diagnosticada (`statusAnterior`, `status`, `motivo`) |
 | `itaguari/nuvem/<bairro>/comando` | nuvem → fog | 1 | `{ "codigo": "P-042", "status": "MANUTENCAO" \| "NORMAL" }` — repassado ao poste |
 | `itaguari/nuvem/_fog/estado` | fog → nuvem | 1 (retido) | presença dos gateways (*Last Will*) e tamanho do buffer |
 | `itaguari/nuvem/_fog/trafego` | fog → nuvem | 1 (retido) | relatório de banda de cada janela (usado por `GET /arquitetura`) |
-| `itaguari/nuvem/<bairro>/ota` → `itaguari/iluminacao/<bairro>/<poste>/ota` | nuvem → fog → edge | 1 | ordem de atualização `{ "codigo", "versao" }` |
-| `itaguari/iluminacao/<bairro>/<poste>/ota-resultado` → `itaguari/nuvem/<bairro>/ota-resultado` | edge → fog → nuvem | 1 | resultado da instalação (sucesso ou rollback A/B) |
+| `itaguari/nuvem/<bairro>/ota` → `.../<poste>/comando` | nuvem → fog → edge | 1 | ordem de atualização `{ "codigo", "versao" }`, entregue ao poste como `atualizar_firmware` |
+| `.../<poste>/evento` → `itaguari/nuvem/<bairro>/ota-resultado` | edge → fog → nuvem | 1 | resultado da instalação (`ota_resultado`: sucesso ou rollback A/B) |
 
-O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`).
+O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`); o domínio é
+um valor do catálogo (o primeiro é `iluminacao`).
 
 **Como o edge simula o campo** ([`src/edge/`](./src/edge/)):
 
@@ -332,7 +344,7 @@ Acompanhar o tráfego, enviar um comando e testar o buffer:
 
 ```bash
 docker compose logs -f edge fog
-docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/iluminacao/#' -v   # campo
+docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/+/iluminacao/#' -v  # campo
 docker exec smartcity-mosquitto-nuvem mosquitto_sub -t 'itaguari/nuvem/#' -v  # nuvem
 
 # comando do técnico: nuvem → fog → poste

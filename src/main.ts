@@ -27,6 +27,7 @@ async function bootstrap() {
     .addTag('KPIs', 'Indicadores agregados do dashboard')
     .addTag('Arquitetura', 'Estado das camadas edge · fog · nuvem')
     .addTag('OTA', 'Atualização remota de firmware com grupo canário')
+    .addTag('Contratos', 'Contrato canônico publicado (JSON Schema e AsyncAPI)')
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, config), {
     jsonDocumentUrl: 'docs-json',

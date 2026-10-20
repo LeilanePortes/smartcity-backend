@@ -3,6 +3,10 @@ import { PosteAtual } from '../simulador/simulador.engine';
 /// Poste como recebido no provisionamento (`GET /postes` da nuvem).
 export interface PosteProvisionado extends PosteAtual {
   bairro: string;
+  /// "Rua, número" — a rua vira a área do poste no contrato.
+  endereco?: string;
+  latitude?: number;
+  longitude?: number;
 }
 
 const esperar = (ms: number): Promise<void> =>

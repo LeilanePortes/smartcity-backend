@@ -1,0 +1,186 @@
+asyncapi: 3.0.0
+info:
+  title: Plataforma IoT — Iluminação Pública Inteligente (Itaguari, GO)
+  version: 1.0.0
+  description: |
+    Interface assíncrona (MQTT) da plataforma. Os dispositivos falam a mensagem
+    canônica v1.0 (`mensagem.schema.json`) nos tópicos
+    `{inquilino}/{site}/{dominio}/{dispositivo}/{tipo}`, conforme a seção 4.5 do
+    documento de requisitos. O domínio é um valor do catálogo do inquilino: o
+    primeiro configurado é `iluminacao` (os postes).
+
+    Dois brokers: o do campo (dispositivos ↔ nó de borda/fog) e o da nuvem
+    (fog ↔ API). Nenhuma biblioteca própria é necessária: qualquer cliente MQTT
+    3.1.1 ou 5.0 que monte o JSON do contrato se integra.
+  license:
+    name: Uso acadêmico
+
+defaultContentType: application/json
+
+servers:
+  campo:
+    host: localhost:1883
+    protocol: mqtt
+    description: Broker do campo (rede local), onde os dispositivos publicam.
+  nuvem:
+    host: localhost:1884
+    protocol: mqtt
+    description: Broker da nuvem (uplink do nó de borda até a API).
+
+channels:
+  telemetria:
+    address: '{inquilino}/{site}/{dominio}/{dispositivo}/telemetria'
+    title: Telemetria do dispositivo
+    servers: [{ $ref: '#/servers/campo' }]
+    parameters: &parametrosDispositivo
+      inquilino:
+        description: Inquilino (ex.: itaguari).
+      site:
+        description: Local, sem acento (ex.: centro, jardim-primavera).
+      dominio:
+        description: Domínio do catálogo (ex.: iluminacao).
+      dispositivo:
+        description: Código do dispositivo (ex.: P-042).
+    messages:
+      telemetria: { $ref: '#/components/messages/canonica' }
+  evento:
+    address: '{inquilino}/{site}/{dominio}/{dispositivo}/evento'
+    title: Eventos do dispositivo
+    description: |
+      No domínio iluminacao: `VEICULO_DETECTADO` e `RETORNO_AO_PISO` (sensor 360°)
+      e `ota_resultado` (resultado de uma atualização de firmware).
+    servers: [{ $ref: '#/servers/campo' }]
+    parameters: *parametrosDispositivo
+    messages:
+      evento: { $ref: '#/components/messages/canonica' }
+  estado:
+    address: '{inquilino}/{site}/{dominio}/{dispositivo}/estado'
+    title: Estado relatado (gêmeo)
+    description: Versão de firmware, uptime, reinícios, sinal e memória livre.
+    servers: [{ $ref: '#/servers/campo' }]
+    parameters: *parametrosDispositivo
+    messages:
+      estado: { $ref: '#/components/messages/canonica' }
+  comando:
+    address: '{inquilino}/{site}/{dominio}/{dispositivo}/comando'
+    title: Comandos para o dispositivo
+    description: |
+      No domínio iluminacao: `definir_status` (`{ status: MANUTENCAO | NORMAL }`)
+      e `atualizar_firmware` (`{ versao }`).
+    servers: [{ $ref: '#/servers/campo' }]
+    parameters: *parametrosDispositivo
+    messages:
+      comando: { $ref: '#/components/messages/canonica' }
+  presencaEdge:
+    address: '{inquilino}/_edge/estado'
+    title: Presença do simulador de campo (Last Will, retida)
+    servers: [{ $ref: '#/servers/campo' }]
+    messages:
+      presenca: { $ref: '#/components/messages/presenca' }
+
+  nuvemResumo:
+    address: 'itaguari/nuvem/{bairro}/resumo'
+    title: Resumo do bairro por janela (fog → nuvem)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      resumo: { $ref: '#/components/messages/interna' }
+  nuvemEvento:
+    address: 'itaguari/nuvem/{bairro}/evento'
+    title: Evento do sensor repassado na hora (fog → nuvem)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      evento: { $ref: '#/components/messages/interna' }
+  nuvemAlerta:
+    address: 'itaguari/nuvem/{bairro}/alerta'
+    title: Mudança de status diagnosticada pelo fog (fog → nuvem)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      alerta: { $ref: '#/components/messages/interna' }
+  nuvemComando:
+    address: 'itaguari/nuvem/{bairro}/comando'
+    title: Comando do técnico (nuvem → fog → dispositivo)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      comando: { $ref: '#/components/messages/interna' }
+  nuvemOta:
+    address: 'itaguari/nuvem/{bairro}/ota'
+    title: Ordem de atualização de firmware (nuvem → fog → dispositivo)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      ota: { $ref: '#/components/messages/interna' }
+  nuvemOtaResultado:
+    address: 'itaguari/nuvem/{bairro}/ota-resultado'
+    title: Resultado de atualização de firmware (fog → nuvem)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      resultado: { $ref: '#/components/messages/interna' }
+  fogEstado:
+    address: 'itaguari/nuvem/_fog/estado'
+    title: Presença dos gateways fog (Last Will, retida)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      presenca: { $ref: '#/components/messages/interna' }
+  fogTrafego:
+    address: 'itaguari/nuvem/_fog/trafego'
+    title: Relatório de banda por janela (retido)
+    servers: [{ $ref: '#/servers/nuvem' }]
+    messages:
+      trafego: { $ref: '#/components/messages/interna' }
+
+operations:
+  publicarTelemetria:
+    action: send
+    channel: { $ref: '#/channels/telemetria' }
+    summary: O dispositivo publica telemetria (QoS 0).
+  publicarEvento:
+    action: send
+    channel: { $ref: '#/channels/evento' }
+    summary: O dispositivo publica eventos (QoS 1).
+  publicarEstado:
+    action: send
+    channel: { $ref: '#/channels/estado' }
+    summary: O dispositivo publica o estado relatado (QoS 0).
+  receberComando:
+    action: receive
+    channel: { $ref: '#/channels/comando' }
+    summary: O dispositivo recebe comandos (QoS 1).
+
+components:
+  messages:
+    canonica:
+      name: MensagemCanonica
+      title: Mensagem canônica v1.0
+      payload:
+        schemaFormat: application/schema+json;version=draft-2020-12
+        schema:
+          $ref: './mensagem.schema.json'
+      examples:
+        - name: telemetriaPoste
+          payload:
+            versao: '1.0'
+            id_mensagem: 6f1c2a9e-4b7d-4e2a-9c13-8a2f61c0e9b7
+            dispositivo: P-042
+            tipo: telemetria
+            timestamp: '2026-10-20T22:00:00Z'
+            local:
+              site: centro
+              area: avenida-goias
+              geo: { type: Point, coordinates: [-49.6061, -15.9208] }
+            medidas:
+              - { grandeza: potencia, valor: 0.051, unidade: kW }
+              - { grandeza: luminosidade, valor: 50, unidade: '%' }
+    presenca:
+      name: Presenca
+      payload:
+        type: object
+        required: [online, em]
+        properties:
+          online: { type: boolean }
+          postes: { type: integer }
+          em: { type: string, format: date-time }
+    interna:
+      name: MensagemInterna
+      title: Mensagem interna fog ↔ nuvem
+      description: Formato descrito em API.md (seção Arquitetura e OTA).
+      payload:
+        type: object

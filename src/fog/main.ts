@@ -3,25 +3,33 @@ import { connect, MqttClient } from 'mqtt';
 import { provisionar } from '../common/provisionamento';
 import {
   assinaturaNuvem,
-  assinaturaTodosPostes,
   MsgAlerta,
   MsgComandoNuvem,
-  MsgEvento,
   MsgEdgeEstado,
   MsgFogEstado,
   MsgFogTrafego,
   MsgOtaNuvem,
-  MsgOtaResultado,
-  MsgSaude,
-  MsgTelemetria,
   parseTopicoNuvem,
-  parseTopicoPoste,
   slugBairro,
   TOPICO_EDGE_ESTADO,
   TOPICO_FOG_ESTADO,
   TOPICO_FOG_TRAFEGO,
   topicoNuvem,
 } from '../common/topicos-mqtt';
+import {
+  comandoAtualizarFirmware,
+  comandoDefinirStatus,
+  lerEventoSensor,
+  lerOtaResultado,
+  lerSaude,
+  lerTelemetria,
+} from '../common/codec-iluminacao';
+import {
+  assinaturaDominio,
+  DOMINIO_ILUMINACAO,
+  parseTopicoDispositivo,
+  validarMensagem,
+} from '../common/contrato';
 import { FogConfig, lerFogConfig } from './fog.config';
 import { GatewayBairro } from './gateway';
 
@@ -37,6 +45,9 @@ import { GatewayBairro } from './gateway';
 
 const log = (msg: string): void => console.log(`[fog] ${msg}`);
 
+/// Identificação do gateway no campo `via` das mensagens que ele emite.
+const viaFog = (bairro: string): string => `fog-${slugBairro(bairro)}`;
+
 interface Publicacao {
   topico: string;
   payload: string;
@@ -48,6 +59,8 @@ class Trafego {
   entradaBytes = 0;
   saidaMsgs = 0;
   saidaBytes = 0;
+  /// Mensagens do campo descartadas por estarem fora do contrato.
+  invalidas = 0;
 
   /** Fecha a janela: devolve os números (para a nuvem) e o texto (para o log). */
   fecharJanela(buffer: number): {
@@ -71,8 +84,10 @@ class Trafego {
       `campo → fog: ${this.entradaMsgs} msgs (${kb(this.entradaBytes)}) | ` +
       `fog → nuvem: ${this.saidaMsgs} msgs (${kb(this.saidaBytes)}) | ` +
       `redução ${pct(numeros.reducaoMsgsPct)} msgs, ` +
-      `${pct(numeros.reducaoBytesPct)} bytes · buffer ${buffer}`;
+      `${pct(numeros.reducaoBytesPct)} bytes · buffer ${buffer}` +
+      (this.invalidas ? ` · ${this.invalidas} fora do contrato` : '');
     this.entradaMsgs = this.entradaBytes = this.saidaMsgs = this.saidaBytes = 0;
+    this.invalidas = 0;
     return { numeros, texto };
   }
 }
@@ -194,10 +209,9 @@ function iniciar(
     log(`conectado ao broker do campo ${config.mqttLocalUrl}`);
     campo.subscribe(
       [
-        assinaturaTodosPostes('telemetria'),
-        assinaturaTodosPostes('evento'),
-        assinaturaTodosPostes('saude'),
-        assinaturaTodosPostes('ota-resultado'),
+        assinaturaDominio(DOMINIO_ILUMINACAO, 'telemetria'),
+        assinaturaDominio(DOMINIO_ILUMINACAO, 'evento'),
+        assinaturaDominio(DOMINIO_ILUMINACAO, 'estado'),
         TOPICO_EDGE_ESTADO,
       ],
       { qos: 1 },
@@ -229,34 +243,47 @@ function iniciar(
       }
       return;
     }
-    const alvo = parseTopicoPoste(topico);
-    const gateway = alvo && gateways.get(alvo.bairroSlug);
-    if (!alvo || !gateway) return;
+    const alvo = parseTopicoDispositivo(topico);
+    const gateway = alvo && gateways.get(alvo.site);
+    if (!alvo || !gateway || alvo.dominio !== DOMINIO_ILUMINACAO) return;
     trafego.entradaMsgs++;
     trafego.entradaBytes += payload.length;
 
-    if (alvo.grandeza === 'telemetria') {
-      const msg = lerJson<MsgTelemetria>(payload);
-      if (msg) enviarAlertas(gateway.receberTelemetria(msg));
-    } else if (alvo.grandeza === 'evento') {
-      const msg = lerJson<MsgEvento>(payload);
-      const evento = msg && gateway.receberEvento(msg);
+    // Toda mensagem do campo é validada contra o contrato v1.0.
+    const validacao = validarMensagem(payload);
+    if (!validacao.valida) {
+      trafego.invalidas++;
+      log(
+        `mensagem fora do contrato em ${topico}: ${validacao.erros.join('; ')}`,
+      );
+      return;
+    }
+    const m = validacao.mensagem;
+    const posteId = gateway.idDe(m.dispositivo);
+    if (!posteId || m.dispositivo !== alvo.dispositivo) return;
+
+    if (m.tipo === 'telemetria') {
+      const t = lerTelemetria(m);
+      if (t) enviarAlertas(gateway.receberTelemetria({ ...t, posteId }));
+    } else if (m.tipo === 'estado') {
+      const e = lerSaude(m);
+      if (e) gateway.receberSaude({ ...e, posteId });
+    } else if (m.tipo === 'evento') {
+      // Resultado de OTA sobe na hora: é ele que a nuvem usa para decidir as ondas.
+      const ota = lerOtaResultado(m);
+      if (ota) {
+        uplink.enviar({
+          topico: topicoNuvem(gateway.bairro, 'ota-resultado'),
+          payload: JSON.stringify({ ...ota, posteId }),
+        });
+        return;
+      }
+      const sensor = lerEventoSensor(m);
+      const evento = sensor && gateway.receberEvento({ ...sensor, posteId });
       if (evento) {
         uplink.enviar({
           topico: topicoNuvem(gateway.bairro, 'evento'),
           payload: JSON.stringify(evento),
-        });
-      }
-    } else if (alvo.grandeza === 'saude') {
-      const msg = lerJson<MsgSaude>(payload);
-      if (msg) gateway.receberSaude(msg);
-    } else if (alvo.grandeza === 'ota-resultado') {
-      // Resultado de OTA sobe na hora: é ele que a nuvem usa para decidir as ondas.
-      const msg = lerJson<MsgOtaResultado>(payload);
-      if (msg) {
-        uplink.enviar({
-          topico: topicoNuvem(gateway.bairro, 'ota-resultado'),
-          payload: JSON.stringify(msg),
         });
       }
     }
@@ -270,11 +297,18 @@ function iniciar(
 
     if (alvo.grandeza === 'ota') {
       const ota = lerJson<MsgOtaNuvem>(payload);
-      const destino = ota && gateway.topicoNoCampo(ota.codigo, 'ota');
+      const destino = ota && gateway.topicoComando(ota.codigo);
       if (!ota || !destino) return;
       campo.publish(
         destino,
-        JSON.stringify({ versao: ota.versao, em: ota.em }),
+        JSON.stringify(
+          comandoAtualizarFirmware(
+            ota.codigo,
+            ota.versao,
+            ota.em,
+            viaFog(gateway.bairro),
+          ),
+        ),
         { qos: 1 },
       );
       log(`OTA repassada ao campo: ${ota.codigo} → ${ota.versao}`);
@@ -291,9 +325,18 @@ function iniciar(
     }
     const destino = gateway.aplicarComando(msg.codigo, msg.status);
     if (!destino) return;
-    campo.publish(destino, JSON.stringify({ status: msg.status, em: msg.em }), {
-      qos: 1,
-    });
+    campo.publish(
+      destino,
+      JSON.stringify(
+        comandoDefinirStatus(
+          msg.codigo,
+          msg.status,
+          msg.em,
+          viaFog(gateway.bairro),
+        ),
+      ),
+      { qos: 1 },
+    );
     log(`comando repassado ao campo: ${msg.codigo} → ${msg.status}`);
   });
 

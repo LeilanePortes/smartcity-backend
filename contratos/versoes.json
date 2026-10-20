@@ -1,0 +1,11 @@
+{
+  "atual": "1.0",
+  "versoes": [
+    {
+      "versao": "1.0",
+      "data": "2026-10-20",
+      "arquivos": ["mensagem.schema.json", "asyncapi.yaml"],
+      "alteracoes": "Versão inicial: mensagem canônica (telemetria, evento, estado, comando) e tópicos {inquilino}/{site}/{dominio}/{dispositivo}/{tipo}."
+    }
+  ]
+}
