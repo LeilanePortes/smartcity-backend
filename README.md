@@ -33,7 +33,7 @@ bun run docker:logs        # acompanha o bootstrap e o simulador
 bun run docker:down        # derruba a stack (o volume do banco é preservado)
 ```
 
-API em `http://localhost:3000` (Swagger em `/docs`), WebSocket em
+API em `http://localhost:3000/api/v1` (Swagger em `/docs`), WebSocket em
 `ws://localhost:3000/tempo-real`.
 
 Variáveis do serviço `app` (todas opcionais, lidas do `.env` na raiz):
@@ -86,7 +86,7 @@ bun run db:backfill
 bun run start:dev      # http://localhost:3000 (watch mode)
 ```
 
-- **API REST:** `http://localhost:3000` — documentação interativa em `/docs`
+- **API REST:** `http://localhost:3000/api/v1` — documentação interativa em `/docs`
   (Swagger), OpenAPI JSON em `/docs-json`.
 - **WebSocket:** `ws://localhost:3000/tempo-real` (Socket.IO).
 - **Contrato completo com exemplos de payload:** [`docs/contrato-api.md`](./docs/contrato-api.md).
@@ -186,15 +186,21 @@ Intervalos e retenção são configuráveis por env (ver `.env.example`).
 
 ## API — Postes (Fase 3)
 
-Base URL: `http://localhost:3000`. Sem prefixo. CORS liberado. Validação estrita
-(query/body desconhecidos → 400; `:id` deve ser UUID → 400; poste inexistente → 404).
+Base URL: `http://localhost:3000/api/v1` (API versionada; só `GET /` fica fora do prefixo).
+CORS liberado. Validação estrita (query/body desconhecidos → 400; `:id` deve ser UUID → 400;
+poste inexistente → 404).
+
+**Listagens padronizadas** (RF-APP-07): toda listagem aceita `pagina` (padrão 1), `tamanho`
+(1–500, padrão 50) e `ordenar` (campo do endpoint, `-` na frente = decrescente) e responde
+`{ itens, pagina, tamanho, total, totalPaginas }`. O mapa pede `?tamanho=500` para trazer
+todos os postes. Ver [`src/common/paginacao.ts`](./src/common/paginacao.ts).
 
 | Método | Rota | Descrição |
 |---|---|---|
-| `GET` | `/postes?status=&busca=` | Lista para o mapa. `status` = `NORMAL`/`CONSUMO_ALTO`/`FALHA_OFFLINE`/`MANUTENCAO`; `busca` casa rua ou bairro (sem acento/caixa). Retorna `{ total, postes[] }`. |
+| `GET` | `/postes?status=&busca=` | Lista para o mapa. `status` = `NORMAL`/`CONSUMO_ALTO`/`FALHA_OFFLINE`/`MANUTENCAO`; `busca` casa rua ou bairro (sem acento/caixa). Paginado; `ordenar` por `codigo` (padrão), `bairro`, `status`, `consumoInstantaneoKw`… |
 | `GET` | `/postes/:id` | Detalhe do poste + `chamadoAberto` (true quando offline). |
 | `GET` | `/postes/:id/telemetria?periodo=hoje\|semana\|mes` | Histórico agregado: `resumo` (consumo/custo/média/pico/**economia %**) + `serie[]` para o gráfico de barras (por hora em `hoje`, por dia em `semana`/`mes`). Default `hoje`. |
-| `GET` | `/postes/:id/eventos?limite=` | Log do sensor 360°, mais recentes primeiro. `limite` 1–200 (default 50). |
+| `GET` | `/postes/:id/eventos?pagina=&tamanho=` | Log do sensor 360°, paginado; mais recentes primeiro (`ordenar=-timestamp`). |
 | `PATCH` | `/postes/:id/status` | Body `{ "status": "MANUTENCAO" \| "NORMAL" }`. Só esses dois — os demais são derivados da telemetria. |
 
 **Economia %** = consumo real frente a operar sempre em 100% pelas mesmas horas
@@ -208,7 +214,7 @@ sobrescrever a mudança manual no tick seguinte.
 | Método | Rota | Descrição |
 |---|---|---|
 | `GET` | `/kpis?periodo=dia\|semana\|mes\|ano` | Consumo (kWh) e custo (R$) da rede no período e no período anterior equivalente, `variacao` percentual, `parcialHoje` (dia corrente à parte) e `serie` comparativa (atual × anterior) para o gráfico — por hora (`dia`), dia (`semana`/`mes`) ou mês (`ano`). Default `mes`. |
-| `GET` | `/kpis/maior-consumo?periodo=&limite=` | Ranking dos postes de maior consumo no período, com endereço e kWh/custo. `limite` 1–20 (default 5). |
+| `GET` | `/kpis/maior-consumo?periodo=&pagina=&tamanho=` | Ranking paginado dos postes de maior consumo no período, com endereço e kWh/custo (padrão: top 5). |
 | `GET` | `/kpis/postes-por-status` | `{ total, porStatus[] }` — contagem por categoria (barra empilhada do PRD). |
 
 Custo = consumo × tarifa **B4a** (R$ 0,58/kWh), exposta em `tarifa` na resposta de `/kpis`.
@@ -318,7 +324,7 @@ um valor do catálogo (o primeiro é `iluminacao`).
 
 **Como o edge simula o campo** ([`src/edge/`](./src/edge/)):
 
-- **Provisionamento:** ao subir, pergunta à nuvem quais postes existem (`GET /postes`).
+- **Provisionamento:** ao subir, pergunta à nuvem quais postes existem (`GET /api/v1/postes`, página a página).
 - **Falhas físicas:** o edge não declara status. Um driver degradado passa a gastar
   mais, e um poste em falha simplesmente **para de publicar** — é a ausência de
   telemetria que caracteriza o offline, como num aparelho real.
@@ -352,9 +358,9 @@ docker exec smartcity-mosquitto-nuvem mosquitto_pub -q 1 \
   -t 'itaguari/nuvem/centro/comando' -m '{"codigo":"P-001","status":"MANUTENCAO"}'
 
 # manutenção pela API: grava no banco e o comando desce até o poste
-curl -X PATCH localhost:3000/postes/<id>/status -H 'Content-Type: application/json' \
+curl -X PATCH localhost:3000/api/v1/postes/<id>/status -H 'Content-Type: application/json' \
   -d '{"status":"MANUTENCAO"}'
-curl -s localhost:3000/arquitetura      # camadas, gateways, banda e alertas
+curl -s localhost:3000/api/v1/arquitetura      # camadas, gateways, banda e alertas
 
 # queda da nuvem: o fog guarda e reenvia ao voltar
 docker compose stop mosquitto-nuvem; sleep 30; docker compose start mosquitto-nuvem
@@ -396,10 +402,10 @@ quem terminou de instalar depois da decisão). Em aparelhos com proteção
 *anti-rollback*, isso seria publicar o código antigo com um número de versão maior.
 
 ```bash
-curl -s localhost:3000/ota                                     # catálogo, versões em campo, implantação
-curl -s -X POST localhost:3000/ota/implantacoes -H 'Content-Type: application/json' \
+curl -s localhost:3000/api/v1/ota                                     # catálogo, versões em campo, implantação
+curl -s -X POST localhost:3000/api/v1/ota/implantacoes -H 'Content-Type: application/json' \
   -d '{"versao":"3.0.0"}'                                      # o canário pega o defeito em ~2 min
-curl -s -X POST localhost:3000/ota/reverter                    # reversão manual
+curl -s -X POST localhost:3000/api/v1/ota/reverter                    # reversão manual
 docker compose logs -f app edge | grep -i ota
 ```
 

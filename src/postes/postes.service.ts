@@ -3,7 +3,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, StatusPoste } from '@prisma/client';
 import { LUMINOSIDADE_PISO_PCT } from '../common/constants';
 import { PrismaService } from '../prisma/prisma.service';
-import { ListarPostesQuery } from './dto/listar-postes.query';
+import { janelaPagina, lerOrdenacao, montarPagina } from '../common/paginacao';
+import { ListarPostesQuery, ORDENACAO_POSTES } from './dto/listar-postes.query';
 import { StatusManual } from './dto/atualizar-status.dto';
 import {
   EVENTO_POSTE_STATUS_ALTERADO,
@@ -31,7 +32,7 @@ export class PostesService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  /** Lista para o mapa, com filtro por status e busca por rua/bairro. */
+  /** Lista para o mapa, com filtro por status, busca por rua/bairro, paginação e ordenação. */
   async listar(query: ListarPostesQuery) {
     const where: Prisma.PosteWhereInput = {};
     if (query.status) where.status = query.status;
@@ -42,13 +43,22 @@ export class PostesService {
       ];
     }
 
-    const postes = await this.prisma.poste.findMany({
-      where,
-      orderBy: { codigo: 'asc' },
-      select: RESUMO_POSTE,
-    });
+    const { campo, direcao } = lerOrdenacao(
+      query.ordenar,
+      ORDENACAO_POSTES,
+      'codigo',
+    );
+    const [total, postes] = await this.prisma.$transaction([
+      this.prisma.poste.count({ where }),
+      this.prisma.poste.findMany({
+        where,
+        orderBy: { [campo]: direcao },
+        ...janelaPagina(query),
+        select: RESUMO_POSTE,
+      }),
+    ]);
 
-    return { total: postes.length, postes };
+    return montarPagina(postes, total, query);
   }
 
   /** Detalhe completo do poste. Lança 404 se não existir. */

@@ -4,7 +4,8 @@ Referência completa dos endpoints e retornos, para uso como contexto no
 desenvolvimento do frontend (app Flutter). Todos os exemplos são respostas reais
 da API rodando com o seed + `bun run db:backfill` padrão.
 
-- **Base URL:** `http://localhost:3000` — sem prefixo, **sem autenticação**
+- **Base URL:** `http://localhost:3000/api/v1` — API versionada; os caminhos abaixo são relativos a ela (ex.: `GET /postes` = `GET /api/v1/postes`). **Sem autenticação** por enquanto
+- **Listagens:** paginadas e ordenáveis no mesmo padrão — ver [Paginação](#paginação)
 - **WebSocket:** `ws://localhost:3000/tempo-real` (Socket.IO) — [seção WebSocket](#websocket--tempo-real)
 - **Swagger UI:** `GET /docs` · **OpenAPI JSON:** `GET /docs-json`
 - **Content-Type:** `application/json` em requests e responses
@@ -110,60 +111,79 @@ Formato padrão do NestJS:
 
 ---
 
+## Paginação
+
+Toda listagem aceita os **mesmos parâmetros** e responde no **mesmo envelope**
+(RF-APP-07). Os filtros próprios de cada endpoint (`status`, `busca`, `periodo`…)
+vêm junto.
+
+| Param | Tipo | Default | Descrição |
+|---|---|---|---|
+| `pagina` | number (≥ 1) | `1` | Página |
+| `tamanho` | number (1–500) | `50` (ranking: `5`) | Itens por página |
+| `ordenar` | string | depende do endpoint | Campo de ordenação; prefixo `-` = decrescente (ex.: `-timestamp`). Campo fora da lista do endpoint → `400` com os aceitos |
+
+```json
+{ "itens": [ … ], "pagina": 1, "tamanho": 50, "total": 248, "totalPaginas": 5 }
+```
+
+Para trazer tudo de uma vez (ex.: os 248 postes do mapa): `?tamanho=500`.
+
+---
+
 ## Postes
 
 ### `GET /postes`
 
-Lista de postes para o mapa (PRD §5.1). Retorna **todos** os que casam com o filtro.
+Lista de postes para o mapa (PRD §5.1), paginada. Para o mapa inteiro, use `?tamanho=500`.
 
-**Query params** (todos opcionais):
+**Query params** (todos opcionais), além de `pagina` e `tamanho`:
 
 | Param | Tipo | Descrição |
 |---|---|---|
 | `status` | `StatusPoste` | Filtra por status. Omitir = todos. |
 | `busca` | string (≤ 120) | Casa `endereco` **ou** `bairro`, sem distinção de acento/caixa. |
+| `ordenar` | string | `codigo` (padrão), `bairro`, `endereco`, `status`, `luminosidadeAtual`, `consumoInstantaneoKw`, `ultimaLeituraEm` |
 
-**Resposta `200`:**
-
-| Campo | Tipo | Descrição |
-|---|---|---|
-| `total` | number | Quantidade de postes retornados (após filtro) |
-| `postes` | `PosteResumo[]` | Ordenados por `codigo` ascendente |
+**Resposta `200`:** envelope de [paginação](#paginação) com `itens: PosteResumo[]`.
 
 ```json
 {
-  "total": 248,
-  "postes": [
+  "itens": [
     {
-      "id": "74bb5973-9bb3-4c89-8d9a-b7ba16d3c6b7",
+      "id": "08afd9da-5687-490c-90c0-b5b7ffb2ef78",
       "codigo": "P-001",
-      "endereco": "Avenida Goiás, 100",
+      "endereco": "Rua 10, 18",
       "bairro": "Centro",
-      "latitude": -15.954802,
-      "longitude": -49.590696,
+      "latitude": -15.920691,
+      "longitude": -49.606176,
       "status": "NORMAL",
       "luminosidadeAtual": 50,
-      "consumoInstantaneoKw": 0.0535,
-      "ultimaLeituraEm": "2026-09-10T16:12:45.103Z"
+      "consumoInstantaneoKw": 0.0528,
+      "ultimaLeituraEm": "2026-10-20T21:33:07.456Z"
     },
     {
-      "id": "62ced096-553b-4566-a0af-22786139830a",
-      "codigo": "P-079",
-      "endereco": "Rua Anhanguera, 112",
-      "bairro": "Setor Oeste",
-      "latitude": -15.952874,
-      "longitude": -49.596962,
-      "status": "FALHA_OFFLINE",
+      "id": "a3e170ac-84a1-40e6-ae31-ce70fdb98d3a",
+      "codigo": "P-002",
+      "endereco": "Rua José Fernandes Carvalho, 403",
+      "bairro": "Centro",
+      "latitude": -15.920899,
+      "longitude": -49.606047,
+      "status": "NORMAL",
       "luminosidadeAtual": 50,
-      "consumoInstantaneoKw": 0,
-      "ultimaLeituraEm": "2026-09-10T14:52:39.667Z"
+      "consumoInstantaneoKw": 0.0527,
+      "ultimaLeituraEm": "2026-10-20T21:33:07.456Z"
     }
-  ]
+  ],
+  "pagina": 1,
+  "tamanho": 2,
+  "total": 248,
+  "totalPaginas": 124
 }
 ```
 
-Exemplos: `GET /postes?status=FALHA_OFFLINE` · `GET /postes?busca=centro` ·
-`GET /postes?status=NORMAL&busca=goiás`
+Exemplos: `GET /postes?tamanho=500` (mapa) · `GET /postes?status=FALHA_OFFLINE` ·
+`GET /postes?busca=centro&ordenar=-consumoInstantaneoKw`
 
 ---
 
@@ -276,17 +296,13 @@ Poste sem leituras no período → `serie: []` e `resumo` com zeros (`economiaPc
 
 ### `GET /postes/:id/eventos`
 
-Log do sensor 360° do poste, mais recentes primeiro (PRD §5.2).
+Log do sensor 360° do poste, paginado; padrão: mais recentes primeiro (PRD §5.2).
 
 **Path param:** `id` — uuid.
 
-**Query param:**
+**Query params:** `pagina`, `tamanho` (padrão `50`) e `ordenar`: `-timestamp` (padrão), `timestamp`, `tipo`.
 
-| Param | Tipo | Default | Descrição |
-|---|---|---|---|
-| `limite` | number (1–200) | `50` | Máximo de eventos |
-
-**Resposta `200`:** array (pode ser `[]`).
+**Resposta `200`:** envelope de [paginação](#paginação); cada item de `itens`:
 
 | Campo | Tipo | Nulo | Descrição |
 |---|---|:--:|---|
@@ -297,25 +313,31 @@ Log do sensor 360° do poste, mais recentes primeiro (PRD §5.2).
 | `timestamp` | string (ISO) | não | |
 
 ```json
-[
-  {
-    "id": "a2c97dc6-87ff-4d36-aaaa-4529cc6600ce",
-    "tipo": "RETORNO_AO_PISO",
-    "sentido": "APROXIMANDO",
-    "luminosidadeResultante": 50,
-    "timestamp": "2026-09-10T15:40:13.566Z"
-  },
-  {
-    "id": "cd77b7af-ff79-4669-8cee-d046b2bd882f",
-    "tipo": "VEICULO_DETECTADO",
-    "sentido": "AFASTANDO",
-    "luminosidadeResultante": 100,
-    "timestamp": "2026-09-10T15:40:00.000Z"
-  }
-]
+{
+  "itens": [
+    {
+      "id": "3d648393-f483-4253-9a07-868d6d695c2b",
+      "tipo": "RETORNO_AO_PISO",
+      "sentido": "APROXIMANDO",
+      "luminosidadeResultante": 50,
+      "timestamp": "2026-10-20T21:33:27.619Z"
+    },
+    {
+      "id": "fe1b93dc-6b59-4a7a-8286-6f635352ad62",
+      "tipo": "VEICULO_DETECTADO",
+      "sentido": "AFASTANDO",
+      "luminosidadeResultante": 100,
+      "timestamp": "2026-10-20T21:33:07.618Z"
+    }
+  ],
+  "pagina": 1,
+  "tamanho": 2,
+  "total": 106,
+  "totalPaginas": 53
+}
 ```
 
-**Erros:** `400` (id não-uuid ou `limite` fora de 1–200) · `404`.
+**Erros:** `400` (id não-uuid, `tamanho` fora de 1–500 ou `ordenar` não aceito) · `404`.
 
 ---
 
@@ -469,14 +491,15 @@ toca 13 meses calendário — o primeiro e o último parciais).
 
 ### `GET /kpis/maior-consumo`
 
-Ranking dos postes de maior consumo no período (PRD §5.3).
+Ranking dos postes de maior consumo no período (PRD §5.3), paginado.
 
 **Query params:**
 
 | Param | Tipo | Default | Descrição |
 |---|---|---|---|
 | `periodo` | `dia` \| `semana` \| `mes` \| `ano` | `mes` | Janela |
-| `limite` | number (1–20) | `5` | Tamanho do ranking |
+| `pagina` / `tamanho` | number | `1` / `5` | Página do ranking (padrão: top 5) |
+| `ordenar` | string | `-consumoKwh` | `-consumoKwh` (maiores primeiro) ou `consumoKwh` |
 
 **Resposta `200`:**
 
@@ -484,31 +507,33 @@ Ranking dos postes de maior consumo no período (PRD §5.3).
 |---|---|---|
 | `periodo` | `PeriodoKpi` | Ecoa a query |
 | `inicio` / `fim` | string (ISO) | Janela avaliada (N dias inteiros UTC) |
-| `ranking` | array | Ordenado por consumo desc |
-| `ranking[].posicao` | number | 1-based |
-| `ranking[].posteId` | string (uuid) | |
-| `ranking[].codigo` | string | |
-| `ranking[].endereco` | string | |
-| `ranking[].bairro` | string | |
-| `ranking[].consumoKwh` | number | kWh no período |
-| `ranking[].custoReais` | number | `consumoKwh × 0,58` |
+| `itens` | array | O ranking da página, na ordem pedida |
+| `pagina` · `tamanho` · `total` · `totalPaginas` | number | Envelope de [paginação](#paginação); `total` = postes com consumo no período |
+| `itens[].posicao` | number | Posição absoluta no ranking (1-based), também nas páginas seguintes |
+| `itens[].posteId` | string (uuid) | |
+| `itens[].codigo` | string | |
+| `itens[].endereco` | string | |
+| `itens[].bairro` | string | |
+| `itens[].consumoKwh` | number | kWh no período |
+| `itens[].custoReais` | number | `consumoKwh × 0,58` |
 
 ```json
 {
   "periodo": "semana",
-  "inicio": "2026-09-03T00:00:00.000Z",
-  "fim": "2026-09-10T00:00:00.000Z",
-  "ranking": [
-    { "posicao": 1, "posteId": "ea1faf52-05f5-4c6b-8df3-84a0a72c7584", "codigo": "P-034", "endereco": "Rua Coronel Ribeiro, 100", "bairro": "Centro",      "consumoKwh": 22.75, "custoReais": 13.19 },
-    { "posicao": 2, "posteId": "93b251f9-b201-4a48-9444-a0dcaf6caf14", "codigo": "P-062", "endereco": "Rua do Cerrado, 136",    "bairro": "Setor Leste", "consumoKwh": 22.28, "custoReais": 12.92 },
-    { "posicao": 3, "posteId": "9a8e98c1-2a4d-4289-931f-98e69e69408c", "codigo": "P-029", "endereco": "Rua São José, 112",       "bairro": "Centro",      "consumoKwh": 22.25, "custoReais": 12.9  },
-    { "posicao": 4, "posteId": "f8aa1866-72a1-44bd-9f84-d13bf0e33e1f", "codigo": "P-054", "endereco": "Rua dos Ipês, 100",       "bairro": "Setor Leste", "consumoKwh": 21.02, "custoReais": 12.19 },
-    { "posicao": 5, "posteId": "4c73eb3e-7168-4cd4-8db2-5f7a6177b684", "codigo": "P-068", "endereco": "Rua Nova Aurora, 148",    "bairro": "Setor Leste", "consumoKwh": 19.46, "custoReais": 11.29 }
-  ]
+  "inicio": "2026-10-13T00:00:00.000Z",
+  "fim": "2026-10-20T00:00:00.000Z",
+  "itens": [
+    { "posicao": 1, "posteId": "b86afe88-f381-44af-acfd-a3b9406f9e71", "codigo": "P-027", "endereco": "Rua 38, 158",  "bairro": "Centro",      "consumoKwh": 22.73, "custoReais": 13.19 },
+    { "posicao": 2, "posteId": "571e892a-5576-465a-a48c-36294f5285a2", "codigo": "P-138", "endereco": "Rua Dez, 228", "bairro": "Setor Norte", "consumoKwh": 22.48, "custoReais": 13.04 }
+  ],
+  "pagina": 1,
+  "tamanho": 2,
+  "total": 248,
+  "totalPaginas": 124
 }
 ```
 
-**Erros:** `400` (`periodo` inválido ou `limite` fora de 1–20).
+**Erros:** `400` (`periodo` inválido, `tamanho` fora de 1–500 ou `ordenar` não aceito).
 
 ---
 
@@ -723,14 +748,16 @@ anterior a quem instalou a nova. **Respostas:** `200` com o corpo de `GET /ota` 
 
 ## `GET /`
 
-Metadados da API (não aparece no Swagger).
+Metadados da API (não aparece no Swagger). É a única rota fora do prefixo `/api/v1`.
 
 ```json
 {
   "nome": "Iluminação Pública Inteligente — API",
   "cidade": "Itaguari, GO",
+  "api": "/api/v1",
   "docs": "/docs",
   "openapi": "/docs-json",
+  "contratos": "/api/v1/contratos",
   "tempoReal": "/tempo-real (Socket.IO)"
 }
 ```

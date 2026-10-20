@@ -1,4 +1,7 @@
 import { PosteAtual } from '../simulador/simulador.engine';
+import { PREFIXO_API } from './constants';
+import type { Pagina } from './paginacao';
+import { TAMANHO_MAXIMO } from './paginacao';
 
 /// Poste como recebido no provisionamento (`GET /postes` da nuvem).
 export interface PosteProvisionado extends PosteAtual {
@@ -14,7 +17,7 @@ const esperar = (ms: number): Promise<void> =>
 
 /**
  * Provisionamento das camadas edge e fog: perguntam à nuvem quais postes
- * existem. Repete até a API responder (no compose, ela pode ainda estar
+ * existem (`GET /api/v1/postes`, paginado). Repete até a API responder (no compose, ela pode ainda estar
  * populando o banco).
  */
 export async function provisionar(
@@ -23,16 +26,22 @@ export async function provisionar(
 ): Promise<PosteProvisionado[]> {
   for (let tentativa = 1; ; tentativa++) {
     try {
-      const resp = await fetch(`${apiUrl}/postes`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const corpo = (await resp.json()) as {
-        postes: Array<
-          Omit<PosteProvisionado, 'ultimaLeituraEm'> & {
-            ultimaLeituraEm: string | null;
-          }
-        >;
-      };
-      return corpo.postes.map((p) => ({
+      const postes: Array<
+        Omit<PosteProvisionado, 'ultimaLeituraEm'> & {
+          ultimaLeituraEm: string | null;
+        }
+      > = [];
+      // Listagem paginada da API: busca página a página até trazer todos.
+      for (let pagina = 1; ; pagina++) {
+        const resp = await fetch(
+          `${apiUrl}/${PREFIXO_API}/postes?pagina=${pagina}&tamanho=${TAMANHO_MAXIMO}`,
+        );
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const corpo = (await resp.json()) as Pagina<(typeof postes)[number]>;
+        postes.push(...corpo.itens);
+        if (pagina >= corpo.totalPaginas) break;
+      }
+      return postes.map((p) => ({
         ...p,
         ultimaLeituraEm: p.ultimaLeituraEm ? new Date(p.ultimaLeituraEm) : null,
       }));
