@@ -1,11 +1,14 @@
 import { RequestMethod, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { PREFIXO_API } from './common/constants';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Lotes de até 5.000 mensagens (RF-ING-03) passam do limite padrão de 100 kB.
+  app.useBodyParser('json', { limit: '10mb' });
 
   app.enableCors();
   // API REST versionada (RF-APP-01): tudo sob /api/v1. A raiz fica de fora
@@ -36,6 +39,8 @@ async function bootstrap() {
     .addTag('Contratos', 'Contrato canônico publicado (JSON Schema e AsyncAPI)')
     .addTag('Catálogo', 'Domínios, perfis de dispositivo, locais e áreas')
     .addTag('Dispositivos', 'Cadastro, credenciais e conexão dos dispositivos')
+    .addTag('Ingestão', 'Pipeline: HTTP, lote e fila de mensagens inválidas')
+    .addTag('Séries', 'Séries temporais e último valor de cada grandeza')
     .addBearerAuth(
       { type: 'http', scheme: 'bearer', description: 'Token do dispositivo' },
       'dispositivo',

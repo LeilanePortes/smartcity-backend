@@ -4,7 +4,7 @@ Referência completa dos endpoints e retornos, para uso como contexto no
 desenvolvimento do frontend (app Flutter). Todos os exemplos são respostas reais
 da API rodando com o seed + `bun run db:backfill` padrão.
 
-- **Base URL:** `http://localhost:3000/api/v1` — API versionada; os caminhos abaixo são relativos a ela (ex.: `GET /postes` = `GET /api/v1/postes`). **Sem autenticação** por enquanto (só `GET /dispositivos/eu` usa o token do dispositivo)
+- **Base URL:** `http://localhost:3000/api/v1` — API versionada; os caminhos abaixo são relativos a ela (ex.: `GET /postes` = `GET /api/v1/postes`). **Sem autenticação** por enquanto (só `GET /dispositivos/eu` e a ingestão usam o token do dispositivo)
 - **Listagens:** paginadas e ordenáveis no mesmo padrão — ver [Paginação](#paginação)
 - **WebSocket:** `ws://localhost:3000/tempo-real` (Socket.IO) — [seção WebSocket](#websocket--tempo-real)
 - **Swagger UI:** `GET /docs` · **OpenAPI JSON:** `GET /docs-json`
@@ -50,6 +50,15 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [Detalhe e atualização](#get-dispositivosref--patch-dispositivosref)
   - [Credenciais](#post-dispositivosrefcredenciais--delete-dispositivosrefcredenciais)
   - [`GET /dispositivos/eu`](#get-dispositivoseu)
+- **Ingestão**
+  - [`POST /ingestao`](#post-ingestao)
+  - [`POST /ingestao/lote`](#post-ingestaolote)
+  - [MQTT](#mqtt)
+  - [`GET /ingestao/invalidas`](#get-ingestaoinvalidas)
+- **Séries**
+  - [`GET /series`](#get-series)
+  - [`GET /dispositivos/:ref/telemetria`](#get-dispositivosreftelemetria)
+  - [`GET /dispositivos/:ref/ultimos-valores`](#get-dispositivosrefultimos-valores)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
 - [Notas do mock](#notas-do-mock)
@@ -1014,6 +1023,206 @@ O próprio dispositivo consulta o seu cadastro com o cabeçalho
   já na conexão seguinte.
 
 É a mesma checagem que a ingestão por HTTP vai usar.
+
+---
+
+## Ingestão
+
+Pipeline no padrão **Pipes and Filters**: **receber → autenticar → validar →
+deduplicar → ordenar → enriquecer → publicar**. HTTP, lote e MQTT passam pelo
+mesmo caminho.
+
+- **Validar:** usa o JSON Schema da versão da mensagem
+  (`GET /contratos`). O que for recusado vai para a
+  [fila de inválidas](#get-ingestaoinvalidas), com a etapa e o motivo (RF-ING-06).
+- **Deduplicar:** uma mensagem com o mesmo `id_mensagem` é gravada uma única vez,
+  mesmo que chegue por canais ou requisições diferentes (RF-ING-08).
+- **Ordenar:** cada medição é gravada pela **hora da medição** (`timestamp`). Um
+  dado atrasado entra na posição certa do histórico (RF-ING-04).
+  - Ele é marcado `atrasada: true` quando chega depois do limite de offline do
+    perfil (3 intervalos), para não disparar alarme como se fosse atual.
+  - Ele não sobrescreve um último valor mais novo.
+- **Enriquecer:** a mensagem gravada leva `cadastro: { inquilino, dominio, site,
+  area, perfil }` (RF-PRO-01).
+  - Cada medida é convertida para a unidade do perfil (ex.: `W` → `kW`, `cm` → `m`,
+    `[degF]` → `Cel`).
+  - Uma medida fora da faixa do perfil, de grandeza não prevista ou de unidade
+    incompatível é gravada com `suspeita: true` e o `motivo`.
+- **Publicar:** a mensagem vira série temporal ([`GET /series`](#get-series)),
+  atualiza o [último valor](#get-dispositivosrefultimos-valores) e gera um evento
+  interno para o motor de regras.
+
+**Os postes continuam chegando pelo resumo do fog**, e o histórico deles também
+aparece nas séries.
+
+### `POST /ingestao`
+
+Uma mensagem canônica por HTTP (RF-ING-02).
+
+- **Cabeçalho:** `Authorization: Bearer <token do dispositivo>` (o token sai em
+  [`POST /dispositivos`](#post-dispositivos)).
+- **Body:** a mensagem canônica, de tipo `telemetria`, `evento` ou `estado`.
+
+```json
+{
+  "versao": "1.0",
+  "id_mensagem": "0b5c3a2e-6f0d-4a8e-9a57-2d1f1b6c9e41",
+  "dispositivo": "medidor-centro",
+  "tipo": "telemetria",
+  "timestamp": "2026-10-21T20:00:00Z",
+  "medidas": [
+    { "grandeza": "potencia", "valor": 12400, "unidade": "W" },
+    { "grandeza": "tensao", "valor": 260, "unidade": "V" }
+  ]
+}
+```
+
+| Status | Corpo | Quando |
+|---|---|---|
+| `202` | `{ "status": "aceita", "id_mensagem": "…", "atrasada": false }` | Gravada |
+| `202` | `{ "status": "duplicada", … }` | Esse `id_mensagem` já foi gravado |
+| `400` | `{ "message": "fora do JSON Schema", "etapa": "validar", "erros": ["/timestamp must match format \"date-time\"", "…"] }` | Fora do schema, versão desconhecida, `tipo: "comando"` ou `timestamp` mais de 5 min no futuro |
+| `401` | `"Credencial ausente, inválida ou revogada."` | Token ausente, errado ou revogado |
+| `403` | `{ "message": "mensagem do dispositivo \"x\" enviada com a credencial de \"y\"", "etapa": "autenticar" }` | A mensagem é de outro dispositivo |
+
+### `POST /ingestao/lote`
+
+Lote de até **5.000** mensagens, com resultado por mensagem (RF-ING-03).
+
+- **Cabeçalho:** o mesmo do envio único.
+- **Body:** um array de mensagens ou `{ "mensagens": [...] }`, até 10 MB.
+- **As válidas são gravadas mesmo que outras sejam recusadas.**
+- Se o lote passar de 5.000 mensagens, a API devolve `413`.
+
+```json
+{
+  "total": 5000,
+  "aceitas": 4997,
+  "duplicadas": 0,
+  "recusadas": 3,
+  "resultados": [
+    { "indice": 0, "id_mensagem": "…", "status": "aceita", "atrasada": false },
+    { "indice": 10, "id_mensagem": "…", "status": "recusada", "etapa": "validar",
+      "motivo": "fora do JSON Schema", "erros": ["/timestamp must match format \"date-time\""] }
+  ]
+}
+```
+
+(`resultados` traz uma linha por mensagem, na ordem enviada; o exemplo mostra 2.)
+
+Medido com a stack local: 5.000 mensagens em ~1,9 s. Reenviar o mesmo lote devolve
+`aceitas: 0, duplicadas: 4997`.
+
+### MQTT
+
+O pipeline assina, no broker da nuvem (`localhost:1884`), os tópicos
+`itaguari/{site}/{dominio}/{dispositivo}/{telemetria|evento|estado}`. Uma mensagem
+é recusada e vai para a fila de inválidas quando:
+
+- o dispositivo não está cadastrado ou está sem credencial ativa (revogada);
+- o tópico não confere com o cadastro (local, domínio, código e tipo).
+
+Medido com a stack local: a mensagem fica gravada em ~0,2 s.
+
+### `GET /ingestao/invalidas`
+
+Fila de mensagens inválidas (DLQ). É paginada.
+
+- **Filtros:** `canal` (`http`, `lote` ou `mqtt`), `etapa` (`autenticar`,
+  `validar` ou `enriquecer`) e `dispositivo`.
+- **`ordenar`:** `recebidoEm`, `canal` ou `etapa` (padrão `-recebidoEm`).
+
+```json
+{
+  "itens": [
+    {
+      "id": "…",
+      "recebidoEm": "2026-10-21T23:33:02.120Z",
+      "canal": "mqtt",
+      "etapa": "autenticar",
+      "motivo": "tópico não confere com o cadastro (esperado itaguari/centro/energia/medidor-centro/telemetria)",
+      "erros": ["tópico não confere com o cadastro (…)"],
+      "dispositivo": "medidor-centro",
+      "idMensagem": "…",
+      "topico": "itaguari/setor-sul/energia/medidor-centro/telemetria",
+      "payload": { "versao": "1.0", "…": "mensagem como chegou" }
+    }
+  ],
+  "pagina": 1, "tamanho": 50, "total": 1, "totalPaginas": 1
+}
+```
+
+---
+
+## Séries
+
+Séries temporais (RF-DAD-01) e último valor (RF-DAD-02).
+
+- As séries juntam as medições do pipeline com o **histórico dos postes**
+  (`potencia` em kW e `luminosidade` em %), em qualquer domínio.
+- **Janela:** `inicio` e `fim` em ISO 8601. Se omitidos, valem as últimas 24 h.
+  O período máximo é de 400 dias.
+- **`intervalo`:** `bruto` (cada medição, até 10.000 pontos), `1m`, `5m`, `15m`,
+  `1h` ou `1d`.
+- **`intervalo=auto`** (o padrão) escolhe pelo tamanho do período: bruto até 2 h,
+  `5m` até 2 dias, `1h` até 31 dias e `1d` acima disso.
+
+Ponto agregado: `{ inicio, media, minimo, maximo, amostras, suspeitas }`.
+Ponto bruto: `{ em, valor, suspeita, dispositivoId }`.
+
+### `GET /series`
+
+`grandeza` é obrigatória. Filtros que podem ser combinados: `dispositivo`, `area`,
+`site` e `dominio` (cada um por `id` ou slug/código). Sem filtro, a consulta
+cobre o inquilino todo.
+
+```json
+// GET /series?grandeza=potencia&area=avenida-goias&dominio=iluminacao&intervalo=1h
+{
+  "grandeza": "potencia",
+  "filtros": { "dispositivo": null, "area": "avenida-goias", "site": null, "dominio": "iluminacao" },
+  "inicio": "2026-10-20T23:33:00.000Z",
+  "fim": "2026-10-21T23:33:00.000Z",
+  "intervalo": "1h",
+  "unidades": ["kW"],
+  "truncada": false,
+  "pontos": [
+    { "inicio": "2026-10-21T23:00:00.000Z", "media": 0.0546, "minimo": 0.0473, "maximo": 0.0901, "amostras": 463, "suspeitas": 0 }
+  ]
+}
+```
+
+### `GET /dispositivos/:ref/telemetria`
+
+Histórico de um dispositivo. Aceita `grandeza` (se omitida, traz todas as do
+perfil), `inicio`, `fim` e `intervalo`. Medido com a stack local: 24 h de um
+dispositivo em ~0,02 s.
+
+```json
+{
+  "dispositivo": { "id": "…", "codigo": "p-001", "nome": "Luminária P-001" },
+  "inicio": "…", "fim": "…", "intervalo": "5m",
+  "series": [
+    { "grandeza": "potencia", "inicio": "…", "fim": "…", "intervalo": "5m", "unidades": ["kW"], "truncada": false, "pontos": [ … ] },
+    { "grandeza": "luminosidade", "…": "…" }
+  ]
+}
+```
+
+### `GET /dispositivos/:ref/ultimos-valores`
+
+Último valor de cada grandeza, **sem consultar o histórico**. Nas luminárias, ele
+vem do estado atual do poste.
+
+```json
+{
+  "dispositivo": { "id": "0d228b7f-c654-40e9-90ef-7a93079b28b1", "codigo": "p-001", "nome": "Luminária P-001" },
+  "valores": [
+    { "grandeza": "luminosidade", "valor": 50, "unidade": "%", "medidoEm": "2026-10-21T23:32:10.394Z", "suspeita": false },
+    { "grandeza": "potencia", "valor": 0.0494, "unidade": "kW", "medidoEm": "2026-10-21T23:32:10.394Z", "suspeita": false }
+  ]
+}
+```
 
 ---
 

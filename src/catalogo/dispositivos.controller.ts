@@ -18,6 +18,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import { tokenBearer } from './credenciais';
 import { DispositivosService } from './dispositivos.service';
 import {
   AtualizarDispositivoDto,
@@ -66,7 +67,7 @@ export class DispositivosController {
     description: 'Token ausente, inválido ou revogado.',
   })
   async eu(@Headers('authorization') autorizacao?: string) {
-    const token = /^Bearer\s+(\S+)$/i.exec(autorizacao ?? '')?.[1];
+    const token = tokenBearer(autorizacao);
     const d = token ? await this.dispositivos.autenticar(token) : null;
     if (!d) {
       throw new UnauthorizedException(

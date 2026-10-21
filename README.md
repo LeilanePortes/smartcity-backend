@@ -156,6 +156,20 @@ inquilino → local → área → dispositivo:
 - **CredencialDispositivo** — um token por dispositivo. Só o hash fica guardado, e
   a credencial pode ser revogada.
 
+**Pipeline de ingestão** (RF-ING-01 a 04, 06 e 08, RF-PRO-01, RF-DAD-01 e 02).
+Segue o padrão Pipes and Filters: receber → autenticar → validar → deduplicar →
+ordenar → enriquecer → publicar.
+
+- **Entradas:** `POST /api/v1/ingestao`, `POST /api/v1/ingestao/lote` (até 5.000) e
+  os tópicos canônicos no broker da nuvem, todas com o mesmo código
+  ([`src/pipeline/`](./src/pipeline/)).
+- **MensagemIngerida** — a mensagem aceita, enriquecida com o cadastro.
+  `id_mensagem` único garante que ela entra uma vez só.
+- **Medicao** — a série temporal, gravada pela hora da medição. A view
+  `serie_medicoes` junta a série com o histórico dos postes.
+- **UltimoValor** — o último valor de cada grandeza de cada dispositivo.
+- **MensagemInvalida** — a fila de inválidas, com a etapa e o motivo.
+
 O catálogo inicial é montado por [`prisma/catalogo.ts`](./prisma/catalogo.ts), que
 roda a cada subida do container sem apagar nada. Endpoints em
 [`API.md`](./API.md#catálogo).

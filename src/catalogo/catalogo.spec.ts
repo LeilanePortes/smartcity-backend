@@ -6,6 +6,7 @@ import {
 } from './credenciais';
 import { estadoConexao } from './conexao';
 import { avaliarMedidas } from './grandezas';
+import { converter } from './unidades';
 
 describe('credencial por dispositivo (RF-DIS-02)', () => {
   it('gera um token único, com prefixo público, e guarda só o hash', () => {
@@ -69,14 +70,39 @@ describe('faixa válida do perfil (RF-CEN-02)', () => {
     expect(baixa.motivo).toMatch(/mínimo/);
   });
 
-  it('marca grandeza não prevista e unidade diferente; sem faixa, aceita', () => {
+  it('marca grandeza não prevista e unidade incompatível; sem faixa, aceita', () => {
     const [nova, unidade, livre] = avaliarMedidas(perfil, [
       { grandeza: 'vazao', valor: 1 },
-      { grandeza: 'nivel', valor: 300, unidade: 'cm' },
+      { grandeza: 'nivel', valor: 3, unidade: 'V' },
       { grandeza: 'temperatura', valor: 80, unidade: 'Cel' },
     ]);
     expect(nova.motivo).toMatch(/não prevista/);
     expect(unidade.motivo).toMatch(/unidade/);
     expect(livre.suspeita).toBe(false);
+  });
+
+  it('normaliza para a unidade do perfil antes de conferir a faixa (RF-PRO-01)', () => {
+    const [cm, f] = avaliarMedidas(perfil, [
+      { grandeza: 'nivel', valor: 1250, unidade: 'cm' },
+      { grandeza: 'temperatura', valor: 212, unidade: '[degF]' },
+    ]);
+    expect(cm).toMatchObject({
+      valor: 12.5,
+      unidade: 'm',
+      convertidaDe: 'cm',
+      suspeita: true,
+    });
+    expect(f.valor).toBeCloseTo(100, 6);
+    expect(f.unidade).toBe('Cel');
+  });
+});
+
+describe('conversão de unidades UCUM', () => {
+  it('converte dentro da mesma grandeza e recusa grandezas diferentes', () => {
+    expect(converter(1500, 'W', 'kW')).toBe(1.5);
+    expect(converter(2, 'kW.h', 'W.h')).toBe(2000);
+    expect(converter(0, 'Cel', 'K')).toBeCloseTo(273.15, 6);
+    expect(converter(1, 'V', 'kW')).toBeNull();
+    expect(converter(1, 'xyz', 'm')).toBeNull();
   });
 });
