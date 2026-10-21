@@ -21,6 +21,6 @@ import { SeriesService } from './series.service';
     InvalidasService,
     SeriesService,
   ],
-  exports: [PipelineService],
+  exports: [PipelineService, IngestaoMqttService],
 })
 export class PipelineModule {}

@@ -39,6 +39,9 @@ services:
       # embutido na API (modo original, reserva caso as camadas falhem).
       SIMULADOR_MODO: ${SIMULADOR_MODO:-camadas}
       MQTT_NUVEM_URL: mqtt://mosquitto-nuvem:1883
+      # E-mail das notificações das regras: Mailpit (caixa em http://localhost:8025).
+      SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}
+      ALARMES_EMAIL_DE: ${ALARMES_EMAIL_DE:-alarmes@itaguari.local}
       # OTA com grupo canário: ondas (% acumulado), janela de observação por onda
       # e critérios de reversão (falha de instalação e consumo canário/controle).
       OTA_ONDAS: ${OTA_ONDAS:-5,25,50,100}
@@ -65,6 +68,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 300s
+
+  # Servidor de e-mail de teste: recebe as notificações das regras e mostra
+  # a caixa de entrada em http://localhost:8025 (nada sai para a internet).
+  mailpit:
+    image: axllent/mailpit:v1.21.8
+    container_name: smartcity-mailpit
+    restart: unless-stopped
+    ports:
+      - '8025:8025'
+      - '1025:1025'
 
   # Broker MQTT do campo (rede local): postes (edge) ↔ gateways (fog).
   mosquitto:

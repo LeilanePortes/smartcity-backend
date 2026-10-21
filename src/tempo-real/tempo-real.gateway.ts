@@ -13,6 +13,7 @@ import { Prisma } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { EVENTO_POSTE_STATUS_ALTERADO } from '../postes/postes.events';
 import type { PosteStatusAlteradoEvent } from '../postes/postes.events';
+import { EVENTO_ALARME_ALTERADO } from '../regras/regras.events';
 import { PrismaService } from '../prisma/prisma.service';
 import { EVENTO_SIM_POSTES_ATUALIZADOS } from '../simulador/simulador.events';
 import type { PostesAtualizadosEvent } from '../simulador/simulador.events';
@@ -46,7 +47,8 @@ const CAMPOS_MAPA = {
  * Cliente → servidor: `assinar:mapa`, `desassinar:mapa`,
  *                     `assinar:poste` {posteId}, `desassinar:poste` {posteId}.
  * Servidor → cliente: `mapa:estado`, `postes:atualizados`,
- *                     `poste:estado`, `poste:atualizado`, `erro`.
+ *                     `poste:estado`, `poste:atualizado`, `erro` e
+ *                     `alarme:atualizado` (para todos os conectados).
  *
  * As atualizações são alimentadas pelo simulador (Fase 2); com
  * `SIMULADOR_ENABLED=false` o gateway ainda serve o estado inicial e as
@@ -182,5 +184,11 @@ export class TempoRealGateway
     this.server
       .to(salaPoste(posteId))
       .emit('poste:atualizado', { ...snapshot, origem: 'status', em });
+  }
+
+  /** Alarme aberto, reconhecido ou resolvido: vai para todos os conectados. */
+  @OnEvent(EVENTO_ALARME_ALTERADO)
+  aoAlterarAlarme(alarme: object): void {
+    this.server?.emit('alarme:atualizado', alarme);
   }
 }

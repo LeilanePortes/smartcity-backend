@@ -20,10 +20,12 @@ export const EVENTO_PIPELINE_MENSAGEM = 'pipeline.mensagem';
 export interface MensagemPublicada {
   /// Mensagem canônica enriquecida, como foi gravada.
   mensagem: Record<string, unknown>;
+  inquilinoId: string;
   dispositivoId: string;
   dominioId: string;
   siteId: string;
   areaId: string | null;
+  perfilId: string;
   medidas: MedidaAvaliada[];
   atrasada: boolean;
   canal: Canal;
@@ -60,6 +62,7 @@ const CADASTRO = {
   dominioId: true,
   siteId: true,
   areaId: true,
+  perfilId: true,
   inquilino: { select: { slug: true } },
   dominio: { select: { slug: true } },
   site: { select: { slug: true } },
@@ -403,10 +406,12 @@ function enriquecer(p: Pronta, origem: Origem, agora: Date) {
   };
   const publicada: MensagemPublicada = {
     mensagem: conteudo,
+    inquilinoId: d.inquilinoId,
     dispositivoId: d.id,
     dominioId: d.dominioId,
     siteId: d.siteId,
     areaId: d.areaId,
+    perfilId: d.perfilId,
     medidas,
     atrasada,
     canal: origem.canal,

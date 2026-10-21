@@ -59,6 +59,13 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [`GET /series`](#get-series)
   - [`GET /dispositivos/:ref/telemetria`](#get-dispositivosreftelemetria)
   - [`GET /dispositivos/:ref/ultimos-valores`](#get-dispositivosrefultimos-valores)
+- **Regras**
+  - [Cadastro de regras](#get-regras--post-regras--get-regrasid--patch-regrasid--delete-regrasid)
+  - [`GET /regras/:id/execucoes`](#get-regrasidexecucoes)
+- **Alarmes**
+  - [`GET /alarmes`](#get-alarmes)
+  - [`GET /alarmes/:id`](#get-alarmesid)
+  - [Reconhecer e resolver](#post-alarmesidreconhecer--post-alarmesidresolver)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
 - [Notas do mock](#notas-do-mock)
@@ -1226,6 +1233,164 @@ vem do estado atual do poste.
 
 ---
 
+## Regras
+
+Regras **condição → ação** configuradas pela API (RF-PRO-02 e 03). O motor avalia
+cada mensagem aceita pelo pipeline no mesmo instante: o alarme abriu em ~0,1 s
+nos testes, e o critério pede até 3 s.
+
+**Condições:**
+
+| `condicao` | Dispara quando |
+|---|---|
+| `{ "tipo": "limite", "grandeza": "temperatura", "operador": ">", "valor": 30 }` | Uma medição atende ao limite. `operador` ∈ `>` `>=` `<` `<=` `==` `!=` |
+| `{ …, "duracaoS": 1800 }` | **Janela de tempo:** o limite vale por 30 min seguidos (ex.: "temperatura > 30 °C por 30 minutos"). Uma medição fora do limite reinicia a contagem |
+| `{ "tipo": "ausencia", "duracaoS": 120 }` | O dispositivo fica 120 s sem mandar nada. É verificado a cada 15 s e vale também para os postes |
+
+**Escopo** (opcional, combinável): `dominio`, `site`, `area` (área geográfica do
+catálogo), `perfil` e `dispositivo`, por `id` ou slug/código. Sem escopo, a regra
+vale para o inquilino todo.
+
+**Comportamento:**
+
+- **Cada episódio dispara uma vez só.** Enquanto a condição continuar valendo,
+  não abre outro alarme nem repete as ações.
+- **A regra resolve o alarme sozinha** quando a condição deixa de valer
+  (`resolvidoPor: "automático"`).
+- **Medição atrasada não dispara** (RF-ING-04): ela entra no histórico, mas não
+  gera alarme como se fosse atual.
+
+**Ações** (`acoes`, executadas na ordem, sempre com o alarme primeiro):
+
+| Ação | O que faz |
+|---|---|
+| `{ "tipo": "alarme" }` | Abre um alarme com a `severidade` da regra (`INFO`, `AVISO` ou `CRITICO`) |
+| `{ "tipo": "notificar", "email": "operador@itaguari.local" }` | Envia e-mail. Na demonstração vai para o Mailpit, cuja caixa fica em http://localhost:8025 |
+| `{ "tipo": "comando", "nome": "ligar_ventilacao", "parametros": { … } }` | Publica um comando canônico em `itaguari/{site}/{dominio}/{dispositivo}/comando` |
+| `{ "tipo": "webhook", "url": "https://…", "tentativas": 3 }` | Faz um POST JSON. Se o destino falhar, tenta de novo com espera crescente (1 s, 2 s, 4 s…); por padrão são 3 tentativas |
+| `{ "tipo": "publicar", "topico": "itaguari/alarmes/criticos" }` | Publica o resumo do disparo num tópico MQTT do broker da nuvem |
+
+O webhook, o e-mail e a publicação recebem o mesmo corpo:
+`{ regra, alarmeId, severidade, titulo, detalhe, dispositivo, site, dominio, grandeza, valor, ocorridoEm }`.
+
+### `GET /regras` · `POST /regras` · `GET /regras/:id` · `PATCH /regras/:id` · `DELETE /regras/:id`
+
+- **Listagem:** paginada, com o filtro `ativa`. `ordenar` ∈ `nome`, `criadoEm`,
+  `severidade`.
+- **`PATCH`:** aceita qualquer campo; `{ "ativa": false }` pausa a regra e `null`
+  num campo de escopo remove o filtro.
+- **`DELETE`:** apaga a regra; os alarmes dela continuam no histórico.
+- **Erros:** condição ou ação inválida → `400` com o motivo (ex.:
+  `"condicao.operador deve ser um de: > >= < <= == !="`).
+
+```json
+// POST /regras
+{
+  "nome": "Temperatura do silo",
+  "dominio": "armazenagem",
+  "condicao": { "tipo": "limite", "grandeza": "temperatura", "operador": ">", "valor": 30, "duracaoS": 1800 },
+  "severidade": "CRITICO",
+  "acoes": [
+    { "tipo": "alarme" },
+    { "tipo": "notificar", "email": "operador@itaguari.local" },
+    { "tipo": "webhook", "url": "https://rotas.exemplo/alarmes" }
+  ]
+}
+// → 201
+{
+  "id": "7ba431bb-d442-41d6-938f-6a0af5289cd1",
+  "nome": "Temperatura do silo",
+  "descricao": null,
+  "ativa": true,
+  "escopo": {
+    "dominio": { "id": "…", "slug": "armazenagem", "nome": "Armazenagem" },
+    "site": null, "area": null, "perfil": null, "dispositivo": null
+  },
+  "condicao": { "tipo": "limite", "grandeza": "temperatura", "operador": ">", "valor": 30, "duracaoS": 1800 },
+  "severidade": "CRITICO",
+  "acoes": [ { "tipo": "alarme" }, { "tipo": "notificar", "email": "operador@itaguari.local" }, { "tipo": "webhook", "url": "https://rotas.exemplo/alarmes" } ],
+  "alarmesAbertos": 0,
+  "criadoEm": "…",
+  "atualizadoEm": "…"
+}
+```
+
+### `GET /regras/:id/execucoes`
+
+Ações executadas pela regra. É paginada, dos mais recentes para os mais antigos:
+`{ id, regraId, alarmeId, tipo, destino, status ("ok" | "falha"), tentativas, erro, criadoEm, concluidoEm }`.
+
+---
+
+## Alarmes
+
+Alarmes com severidade e **ciclo de vida ATIVO → RECONHECIDO → RESOLVIDO**
+(RF-PRO-05).
+
+- **Duplicados:** enquanto um alarme está aberto (ativo ou reconhecido), o mesmo
+  problema no mesmo dispositivo não abre outro.
+- **`origem: "regra"`:** veio de uma regra da central.
+- **`origem: "borda"`:** veio de um diagnóstico do fog (poste em falha/offline,
+  com severidade `CRITICO`, ou com consumo alto, com `AVISO`). Ele fecha sozinho
+  quando o poste volta ao normal.
+- **`ocorridoEm`** é **quando aconteceu**: a hora da medição ou do diagnóstico na
+  borda, mesmo que tenha chegado depois de uma desconexão. **`criadoEm`** é
+  quando a central registrou.
+- **Tempo real:** cada mudança é enviada a todos os conectados no evento
+  Socket.IO `alarme:atualizado`.
+
+### `GET /alarmes`
+
+Paginado.
+
+- **Filtros:** `status`, `severidade`, `origem` (`regra` ou `borda`),
+  `dispositivo` (id ou código) e `regra` (id).
+- **`ordenar`:** `ocorridoEm` (padrão `-ocorridoEm`), `criadoEm`, `severidade` ou
+  `status`.
+
+```json
+{
+  "itens": [
+    {
+      "id": "300f847c-6ceb-40ec-967b-adc1fb5d8560",
+      "origem": "regra",
+      "severidade": "CRITICO",
+      "status": "RECONHECIDO",
+      "titulo": "Temperatura do silo: temperatura > 30 Cel",
+      "detalhe": "temperatura = 32 Cel por 60 s seguidos",
+      "grandeza": "temperatura",
+      "valor": 32,
+      "ocorridoEm": "2026-10-21T23:48:59.419Z",
+      "criadoEm": "2026-10-21T23:48:59.530Z",
+      "reconhecidoEm": "2026-10-21T23:49:10.002Z",
+      "reconhecidoPor": "leilane",
+      "resolvidoEm": null,
+      "resolvidoPor": null,
+      "comentario": "Equipe a caminho",
+      "dispositivo": { "id": "…", "codigo": "silo-02", "nome": "Silo 2" },
+      "regra": { "id": "7ba431bb-d442-41d6-938f-6a0af5289cd1", "nome": "Temperatura do silo" }
+    }
+  ],
+  "pagina": 1, "tamanho": 50, "total": 1, "totalPaginas": 1
+}
+```
+
+### `GET /alarmes/:id`
+
+O alarme e as ações que ele gerou (`execucoes[]`: `{ tipo, destino, status,
+tentativas, erro, criadoEm, concluidoEm }`).
+
+### `POST /alarmes/:id/reconhecer` · `POST /alarmes/:id/resolver`
+
+- **Body (opcional):** `{ "por": "leilane", "comentario": "Equipe a caminho" }`.
+  Até o login existir, quem fez vem no corpo; o padrão é `"operador"`.
+- **`reconhecer`:** só funciona num alarme `ATIVO`.
+- **`resolver`:** funciona num alarme `ATIVO` ou `RECONHECIDO`.
+- **Respostas:** `200` com o alarme · `409` se a transição não for permitida ·
+  `404` se o alarme não existir.
+
+---
+
 ## `GET /`
 
 Metadados da API (não aparece no Swagger). É a única rota fora do prefixo `/api/v1`.
@@ -1368,6 +1533,10 @@ Somente os postes que mudaram no tick.
   "em": "2026-09-10T16:12:48.171Z"
 }
 ```
+
+#### `alarme:atualizado` — todos os conectados, quando um alarme abre, é reconhecido ou é resolvido
+
+Mesmo formato de um item de [`GET /alarmes`](#get-alarmes). Não precisa assinar sala.
 
 #### `erro`
 

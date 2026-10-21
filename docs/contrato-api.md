@@ -454,6 +454,34 @@ publicar. Detalhes de cada campo no `API.md`.
 
 ---
 
+## Regras e alarmes
+
+```jsonc
+// POST /regras · GET /regras · GET/PATCH/DELETE /regras/:id · GET /regras/:id/execucoes
+{ "nome": "Temperatura do silo",
+  "dominio": "armazenagem", "site": null, "area": null, "perfil": null, "dispositivo": null,     // escopo (id ou slug), opcional
+  "condicao": { "tipo": "limite", "grandeza": "temperatura", "operador": ">", "valor": 30, "duracaoS": 1800 },
+              // ou { "tipo": "ausencia", "duracaoS": 120 }
+  "severidade": "CRITICO",                                                 // INFO | AVISO | CRITICO
+  "acoes": [ { "tipo": "alarme" }, { "tipo": "notificar", "email": "…" }, { "tipo": "comando", "nome": "…", "parametros": { } },
+             { "tipo": "webhook", "url": "https://…", "tentativas": 3 }, { "tipo": "publicar", "topico": "itaguari/alarmes/…" } ] }
+// resposta: + id, ativa, escopo { dominio|site|area|perfil: { id, slug, nome } | null, dispositivo: { id, codigo, nome } | null }, alarmesAbertos, criadoEm, atualizadoEm
+
+// GET /alarmes?status=ATIVO|RECONHECIDO|RESOLVIDO&severidade=&origem=regra|borda&dispositivo=&regra=   (paginado, -ocorridoEm)
+{ "id": "…", "origem": "regra", "severidade": "CRITICO", "status": "ATIVO",
+  "titulo": "Temperatura do silo: temperatura > 30 Cel", "detalhe": "temperatura = 32 Cel por 60 s seguidos",
+  "grandeza": "temperatura", "valor": 32,
+  "ocorridoEm": "…",            // quando aconteceu (medição ou diagnóstico na borda)
+  "criadoEm": "…", "reconhecidoEm": null, "reconhecidoPor": null, "resolvidoEm": null, "resolvidoPor": null, "comentario": null,
+  "dispositivo": { "id": "…", "codigo": "…", "nome": "…" }, "regra": { "id": "…", "nome": "…" } }   // regra null na origem borda
+// GET /alarmes/:id → + execucoes: [ { tipo, destino, status: "ok"|"falha", tentativas, erro, criadoEm, concluidoEm } ]
+// POST /alarmes/:id/reconhecer   body { "por"?: "…", "comentario"?: "…" } → 200 · 409 se não estiver ATIVO
+// POST /alarmes/:id/resolver     body idem → 200 · 409 se já RESOLVIDO
+// Socket.IO: "alarme:atualizado" (mesmo formato) para todos os conectados
+```
+
+---
+
 ## WebSocket — `ws://localhost:3000/tempo-real`
 
 Socket.IO, namespace `/tempo-real`. Sem autenticação. As atualizações ao vivo

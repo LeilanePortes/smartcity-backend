@@ -34,7 +34,8 @@ bun run docker:down        # derruba a stack (o volume do banco é preservado)
 ```
 
 API em `http://localhost:3000/api/v1` (Swagger em `/docs`), WebSocket em
-`ws://localhost:3000/tempo-real`.
+`ws://localhost:3000/tempo-real`. Caixa de e-mail das notificações (Mailpit) em
+`http://localhost:8025`.
 
 Variáveis do serviço `app` (todas opcionais, lidas do `.env` na raiz):
 
@@ -169,6 +170,20 @@ ordenar → enriquecer → publicar.
   `serie_medicoes` junta a série com o histórico dos postes.
 - **UltimoValor** — o último valor de cada grandeza de cada dispositivo.
 - **MensagemInvalida** — a fila de inválidas, com a etapa e o motivo.
+
+**Regras e alarmes** (RF-PRO-02, 03 e 05), em [`src/regras/`](./src/regras/):
+
+- **Regra** — condição (limite com janela de tempo, ou ausência de dados), escopo
+  (domínio, local, área, perfil ou dispositivo) e ações: alarme, e-mail, comando,
+  webhook com novas tentativas e publicação em tópico.
+- **Motor** — avalia cada mensagem do pipeline na hora.
+- **Alarme** — ciclo de vida ATIVO → RECONHECIDO → RESOLVIDO, com severidade. Os
+  diagnósticos do fog também viram alarmes (origem `borda`), com a hora em que
+  aconteceram.
+- **ExecucaoAcao** — o resultado de cada ação.
+
+Os e-mails vão para o **Mailpit**, um servidor de e-mail de teste com a caixa em
+http://localhost:8025.
 
 O catálogo inicial é montado por [`prisma/catalogo.ts`](./prisma/catalogo.ts), que
 roda a cada subida do container sem apagar nada. Endpoints em

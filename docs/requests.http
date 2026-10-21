@@ -214,3 +214,57 @@ GET {{host}}/series?grandeza=potencia&area=avenida-goias&dominio=iluminacao&inte
 ### Série de um bairro nos últimos 30 dias, por dia
 GET {{host}}/series?grandeza=potencia&site=centro&intervalo=1d&inicio=2026-09-22T00:00:00Z
 
+### --- Regras e alarmes ---
+
+### Regra de limite com janela: tensão > 240 V por 60 s → alarme, e-mail, webhook e tópico
+POST {{host}}/regras
+Content-Type: application/json
+
+{
+  "nome": "Tensão alta no quadro",
+  "dominio": "energia",
+  "condicao": { "tipo": "limite", "grandeza": "tensao", "operador": ">", "valor": 240, "duracaoS": 60 },
+  "severidade": "CRITICO",
+  "acoes": [
+    { "tipo": "alarme" },
+    { "tipo": "notificar", "email": "operador@itaguari.local" },
+    { "tipo": "comando", "nome": "desligar_circuito" },
+    { "tipo": "publicar", "topico": "itaguari/alarmes/criticos" }
+  ]
+}
+
+### Regra de ausência de dados: luminária 2 min sem telemetria
+POST {{host}}/regras
+Content-Type: application/json
+
+{
+  "nome": "Luminária sem dados",
+  "dominio": "iluminacao",
+  "condicao": { "tipo": "ausencia", "duracaoS": 120 },
+  "severidade": "AVISO",
+  "acoes": [ { "tipo": "alarme" } ]
+}
+
+### Regras
+GET {{host}}/regras
+
+### Alarmes abertos, mais graves primeiro
+GET {{host}}/alarmes?status=ATIVO&ordenar=-severidade
+
+### Alarmes vindos da borda (diagnóstico do fog)
+GET {{host}}/alarmes?origem=borda
+
+### Reconhecer um alarme (troque o id)
+POST {{host}}/alarmes/COLE_O_ID/reconhecer
+Content-Type: application/json
+
+{ "por": "operador", "comentario": "Equipe a caminho" }
+
+### Resolver
+POST {{host}}/alarmes/COLE_O_ID/resolver
+Content-Type: application/json
+
+{ "por": "operador" }
+
+### Caixa de e-mail das notificações → abrir http://localhost:8025 no navegador
+

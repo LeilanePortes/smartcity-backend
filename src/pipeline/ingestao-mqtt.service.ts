@@ -66,6 +66,16 @@ export class IngestaoMqttService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Publica no broker da nuvem (comandos e tópicos das regras). QoS 1: com o
+   * broker fora, o cliente guarda e envia ao reconectar. false sem cliente.
+   */
+  publicar(topico: string, payload: object): boolean {
+    if (!this.cliente) return false;
+    this.cliente.publish(topico, JSON.stringify(payload), { qos: 1 });
+    return true;
+  }
+
   onModuleDestroy(): void {
     this.cliente?.end(true);
   }
