@@ -4,7 +4,7 @@ Referência completa dos endpoints e retornos, para uso como contexto no
 desenvolvimento do frontend (app Flutter). Todos os exemplos são respostas reais
 da API rodando com o seed + `bun run db:backfill` padrão.
 
-- **Base URL:** `http://localhost:3000/api/v1` — API versionada; os caminhos abaixo são relativos a ela (ex.: `GET /postes` = `GET /api/v1/postes`). **Sem autenticação** por enquanto
+- **Base URL:** `http://localhost:3000/api/v1` — API versionada; os caminhos abaixo são relativos a ela (ex.: `GET /postes` = `GET /api/v1/postes`). **Sem autenticação** por enquanto (só `GET /dispositivos/eu` usa o token do dispositivo)
 - **Listagens:** paginadas e ordenáveis no mesmo padrão — ver [Paginação](#paginação)
 - **WebSocket:** `ws://localhost:3000/tempo-real` (Socket.IO) — [seção WebSocket](#websocket--tempo-real)
 - **Swagger UI:** `GET /docs` · **OpenAPI JSON:** `GET /docs-json`
@@ -39,6 +39,17 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [`GET /ota`](#get-ota)
   - [`POST /ota/implantacoes`](#post-otaimplantacoes)
   - [`POST /ota/reverter`](#post-otareverter)
+- **Catálogo**
+  - [Domínios](#get-catalogodominios--post-catalogodominios--get-catalogodominiosref)
+  - [Perfis de dispositivo](#get-catalogoperfis--post-catalogoperfis--get-catalogoperfisref)
+  - [Locais (sites)](#get-sites--post-sites--get-sitesref)
+  - [Áreas](#get-sitesrefareas--post-sitesrefareas)
+- **Dispositivos**
+  - [`GET /dispositivos`](#get-dispositivos)
+  - [`POST /dispositivos`](#post-dispositivos)
+  - [Detalhe e atualização](#get-dispositivosref--patch-dispositivosref)
+  - [Credenciais](#post-dispositivosrefcredenciais--delete-dispositivosrefcredenciais)
+  - [`GET /dispositivos/eu`](#get-dispositivoseu)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
 - [Notas do mock](#notas-do-mock)
@@ -108,6 +119,9 @@ Formato padrão do NestJS:
 | `:id` não é UUID | `400` | `"Validation failed (uuid is expected)"` |
 | Body inválido (`PATCH status`) | `400` | `["status must be one of the following values: MANUTENCAO, NORMAL"]` |
 | Poste inexistente | `404` | `"Poste <id> não encontrado."` |
+| Item do catálogo / dispositivo inexistente | `404` | `"Dispositivo \"p-999\" não encontrado."` |
+| Slug ou código repetido | `409` | `"Já existe o domínio \"energia\"."` |
+| Token do dispositivo ausente, inválido ou revogado | `401` | `"Credencial ausente, inválida ou revogada."` |
 
 ---
 
@@ -743,6 +757,263 @@ igual à atual · `409` já existe implantação em andamento, ou a API está no
 Decisão manual da equipe: para a implantação em andamento e reenvia a versão
 anterior a quem instalou a nova. **Respostas:** `200` com o corpo de `GET /ota` ·
 `409` se não houver implantação em andamento.
+
+---
+
+## Catálogo
+
+O catálogo do inquilino segue a hierarquia **inquilino → local (site) → área →
+dispositivo**, com **domínios** e **perfis de dispositivo** configuráveis
+(RF-CEN-01 a 03). Tudo é dado, não código: um domínio novo é criado pela API.
+
+O inquilino por enquanto é um só, a Prefeitura de Itaguari (`itaguari`). Na
+subida, a API monta o catálogo inicial (`prisma/catalogo.ts`, idempotente):
+
+- o domínio `iluminacao`;
+- o perfil `luminaria-led`;
+- os 9 bairros como locais, com o polígono de cada um;
+- as ruas com postes como áreas, com o traçado real;
+- **um dispositivo por poste** (código `p-001`…`p-248`, ligado pelo `posteId`).
+
+**Referências nas URLs e nos corpos:** domínios, perfis, locais e áreas aceitam o
+`id` (uuid) ou o `slug`; dispositivos aceitam o `id` ou o `codigo`.
+
+**Slug:** letras minúsculas, números, `-` e `_` (ex.: `recursos_hidricos`). Slug
+repetido → `409`.
+
+**Listagens** (`GET /catalogo/dominios`, `/catalogo/perfis`, `/sites`,
+`/sites/:ref/areas`): paginadas, com `busca` (slug ou nome) e `ordenar` ∈ `slug`,
+`nome`, `criadoEm` (padrão `slug`).
+
+### `GET /catalogo/dominios` · `POST /catalogo/dominios` · `GET /catalogo/dominios/:ref`
+
+**Body do POST:** `{ "slug": "energia", "nome": "Energia", "descricao": "..." }`
+(`descricao` opcional). **Respostas:** `201` · `400` slug inválido · `409` slug já existe.
+
+```json
+{
+  "itens": [
+    {
+      "id": "483934d0-0d1f-4ea3-aa9e-ec1cda64dcf2",
+      "slug": "iluminacao",
+      "nome": "Iluminação pública",
+      "descricao": "Telegestão e dimerização das luminárias da cidade.",
+      "criadoEm": "2026-10-21T19:49:09.706Z",
+      "atualizadoEm": "2026-10-21T19:49:09.706Z",
+      "dispositivos": 248
+    }
+  ],
+  "pagina": 1, "tamanho": 50, "total": 1, "totalPaginas": 1
+}
+```
+
+### `GET /catalogo/perfis` · `POST /catalogo/perfis` · `GET /catalogo/perfis/:ref`
+
+Perfil de dispositivo (RF-CEN-02): grandezas com unidade [UCUM](https://ucum.org)
+e faixa válida, e o intervalo esperado de envio.
+
+- O perfil não pertence a um domínio, então é **reutilizável entre projetos**.
+- Uma medida fora da faixa não é descartada: é **marcada como suspeita**. Quem
+  aplica a marca é a ingestão, com a função `avaliarMedidas`.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `grandezas[]` | `{ grandeza, unidade, minimo?, maximo? }` | `grandeza` em minúsculas com `_`; mínimo ≤ máximo; sem repetir |
+| `intervaloEnvioS` | int (1–604800) | Intervalo esperado entre mensagens, em segundos |
+| `limiteOfflineS` | int (só na resposta) | `intervaloEnvioS × 3`: tempo sem mensagens até o dispositivo ficar offline |
+| `dispositivos` | int (só na resposta) | Quantos dispositivos usam o perfil |
+
+```json
+{
+  "id": "53588b5a-53a2-4968-805a-8d90e911ed52",
+  "slug": "luminaria-led",
+  "nome": "Luminária LED com sensor 360°",
+  "descricao": "Controlador de poste: potência e luminosidade. A nuvem recebe a telemetria pelo resumo do fog, a cada 60 s.",
+  "grandezas": [
+    { "grandeza": "potencia", "unidade": "kW", "minimo": 0, "maximo": 0.25 },
+    { "grandeza": "luminosidade", "unidade": "%", "minimo": 0, "maximo": 100 }
+  ],
+  "intervaloEnvioS": 60,
+  "criadoEm": "2026-10-21T19:49:09.711Z",
+  "atualizadoEm": "2026-10-21T19:49:09.711Z",
+  "limiteOfflineS": 180,
+  "dispositivos": 248
+}
+```
+
+### `GET /sites` · `POST /sites` · `GET /sites/:ref`
+
+Locais (bairro na cidade, fazenda no campo), com geometria **GeoJSON** em `[lon, lat]`.
+
+- **Body do POST:** `{ slug, nome, tipo?, geometria? }`. O `tipo` é livre (padrão
+  `bairro`).
+- **`geometria`** aceita `Point`, `MultiPoint`, `LineString`, `MultiLineString`,
+  `Polygon` ou `MultiPolygon`. Uma geometria inválida devolve `400`.
+- **Na resposta**, `areas` e `dispositivos` trazem as contagens.
+
+```json
+{
+  "id": "8550b724-4a1b-4a19-9f06-28162bdc15a2",
+  "slug": "centro",
+  "nome": "Centro",
+  "tipo": "bairro",
+  "geometria": {
+    "type": "Polygon",
+    "coordinates": [[[-49.604582, -15.920801], [-49.604606, -15.920536], "...", [-49.604582, -15.920801]]]
+  },
+  "criadoEm": "2026-10-21T19:49:09.718Z",
+  "atualizadoEm": "2026-10-21T19:50:54.497Z",
+  "areas": 12,
+  "dispositivos": 53
+}
+```
+
+### `GET /sites/:ref/areas` · `POST /sites/:ref/areas`
+
+Áreas de um local (rua, praça, talhão, silo), com geometria.
+
+- **Body do POST:** o mesmo dos locais. O `tipo` padrão é `area`.
+- **Ruas criadas na subida:** são do tipo `rua` e trazem o traçado real, um
+  `MultiLineString`.
+
+```json
+{
+  "itens": [
+    {
+      "id": "2f915be3-a647-47f1-b98c-015026f8cfb1",
+      "slug": "avenida-goias",
+      "nome": "Avenida Goiás",
+      "tipo": "rua",
+      "geometria": { "type": "MultiLineString", "coordinates": [[[-49.606362, -15.922239], [-49.606496, -15.921187], "..."]] },
+      "criadoEm": "2026-10-21T19:49:09.770Z",
+      "atualizadoEm": "2026-10-21T19:50:54.580Z",
+      "site": { "id": "8550b724-4a1b-4a19-9f06-28162bdc15a2", "slug": "centro", "nome": "Centro" },
+      "dispositivos": 9
+    }
+  ],
+  "pagina": 1, "tamanho": 1, "total": 12, "totalPaginas": 12
+}
+```
+
+---
+
+## Dispositivos
+
+Cadastro com perfil, domínio, local, área, fabricante, firmware e inquilino
+(RF-DIS-01), credencial única por dispositivo (RF-DIS-02) e online/offline pelo
+intervalo do perfil (RF-DIS-06).
+
+### `Dispositivo`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `id` | string (uuid) | |
+| `codigo` | string | Único no inquilino; é o `{dispositivo}` do tópico MQTT. Não muda depois do cadastro |
+| `nome` | string | |
+| `inquilino` / `dominio` / `site` | `{ id, slug, nome }` | |
+| `perfil` | `{ id, slug, nome }` | |
+| `area` | `{ id, slug, nome }` \| null | |
+| `fabricante` / `firmware` | string | O firmware das luminárias acompanha o que o campo relata, inclusive depois de um OTA |
+| `modelo` | string \| null | |
+| `geo` | GeoJSON `Point` \| null | `[lon, lat]` |
+| `posteId` | string \| null | Poste ligado (só nos dispositivos de iluminação) |
+| `conexao` | `{ online, ultimaMensagemEm, limiteOfflineS }` | `online` = última mensagem há no máximo `limiteOfflineS` (3 × o intervalo do perfil) |
+| `credencial` | `{ ativa: true, prefixo, emitidaEm }` \| `{ ativa: false }` | Nunca traz o token |
+| `criadoEm` / `atualizadoEm` | string (ISO) | |
+
+### `GET /dispositivos`
+
+Paginado. Filtros (todos opcionais):
+
+- `dominio`, `perfil`, `site` e `area`: `id` ou `slug`;
+- `conexao`: `online` ou `offline`;
+- `busca`: procura no código ou no nome.
+
+`ordenar` ∈ `codigo` (padrão), `nome`, `firmware`, `criadoEm`, `ultimaMensagemEm`.
+
+```json
+{
+  "itens": [
+    {
+      "id": "0d228b7f-c654-40e9-90ef-7a93079b28b1",
+      "codigo": "p-001",
+      "nome": "Luminária P-001",
+      "inquilino": { "id": "398b70e4-dfaf-4051-8dcc-1f288f2c8141", "slug": "itaguari", "nome": "Prefeitura de Itaguari" },
+      "dominio": { "id": "483934d0-0d1f-4ea3-aa9e-ec1cda64dcf2", "slug": "iluminacao", "nome": "Iluminação pública" },
+      "perfil": { "id": "53588b5a-53a2-4968-805a-8d90e911ed52", "slug": "luminaria-led", "nome": "Luminária LED com sensor 360°" },
+      "site": { "id": "8550b724-4a1b-4a19-9f06-28162bdc15a2", "slug": "centro", "nome": "Centro" },
+      "area": { "id": "6fe54801-b517-4790-a281-0b4578a98718", "slug": "rua-10", "nome": "Rua 10" },
+      "fabricante": "Simulador SmartCity (edge)",
+      "modelo": "LUM-LED-100W",
+      "firmware": "2.4.1",
+      "geo": { "type": "Point", "coordinates": [-49.606176, -15.920691] },
+      "posteId": "08afd9da-5687-490c-90c0-b5b7ffb2ef78",
+      "conexao": { "online": true, "ultimaMensagemEm": "2026-10-21T19:52:11.263Z", "limiteOfflineS": 180 },
+      "credencial": { "ativa": false },
+      "criadoEm": "2026-10-21T19:49:09.926Z",
+      "atualizadoEm": "2026-10-21T19:49:09.926Z"
+    }
+  ],
+  "pagina": 1, "tamanho": 1, "total": 53, "totalPaginas": 53
+}
+```
+
+### `POST /dispositivos`
+
+Cadastra o dispositivo e **emite a credencial**.
+
+- **Campos obrigatórios:** `codigo`, `nome`, `dominio`, `perfil`, `site`,
+  `fabricante` e `firmware`.
+- **Campos opcionais:** `area` (precisa ser do mesmo local), `modelo`,
+  `latitude` e `longitude`.
+- **O `credencial.token` aparece só nesta resposta.** No banco fica apenas o hash
+  SHA-256.
+
+**Respostas:**
+
+- `201`: cadastro feito;
+- `400`: campo inválido, referência que não existe, área de outro local ou código
+  reservado (`eu`);
+- `409`: código já existe.
+
+```json
+{
+  "dispositivo": { "codigo": "medidor-centro", "...": "mesmo formato de Dispositivo" },
+  "credencial": {
+    "token": "dsp_b93557b21ba7_FosgDz5O07JUU96bgBYZEHBglsLVpIS_",
+    "prefixo": "b93557b21ba7",
+    "emitidaEm": "2026-10-21T19:51:18.665Z",
+    "aviso": "Guarde este token agora: ele não é mostrado de novo. Se perder, emita outro (o anterior é revogado)."
+  }
+}
+```
+
+### `GET /dispositivos/:ref` · `PATCH /dispositivos/:ref`
+
+Detalhe e atualização.
+
+- O `PATCH` aceita os mesmos campos do cadastro, menos o `codigo`.
+- Trocar o `site` sem informar a `area` remove a área.
+- `"area": null` também remove a área.
+
+### `POST /dispositivos/:ref/credenciais` · `DELETE /dispositivos/:ref/credenciais`
+
+- **`POST`** emite um token novo e **revoga o anterior**: cada dispositivo tem uma
+  só credencial ativa. Resposta `201`: `{ dispositivo, token, prefixo, emitidaEm,
+  anterioresRevogadas, aviso }`.
+- **`DELETE`** revoga a credencial ativa. Resposta `200`: `{ dispositivo,
+  revogadas, revogadaEm }`. Se não houver credencial ativa, devolve `404`.
+
+### `GET /dispositivos/eu`
+
+O próprio dispositivo consulta o seu cadastro com o cabeçalho
+`Authorization: Bearer <token>`.
+
+- **`200`:** o `Dispositivo`.
+- **`401`:** token ausente, inválido ou **revogado**. A revogação vale na hora,
+  já na conexão seguinte.
+
+É a mesma checagem que a ingestão por HTTP vai usar.
 
 ---
 

@@ -17,6 +17,9 @@ foram capturados da API rodando com o seed + `db:backfill` padrão.
 | Query/param/body inválido | `400` | `{ "message": [ "..." ], "error": "Bad Request", "statusCode": 400 }` |
 | `:id` fora do formato UUID | `400` | idem |
 | Poste inexistente | `404` | `{ "message": "Poste <id> não encontrado.", "error": "Not Found", "statusCode": 404 }` |
+| Catálogo/dispositivo inexistente | `404` | `{ "message": "Dispositivo \"p-999\" não encontrado.", ... }` |
+| Slug ou código repetido | `409` | `{ "message": "Já existe o domínio \"energia\".", "error": "Conflict", "statusCode": 409 }` |
+| Token de dispositivo inválido/revogado | `401` | `{ "message": "Credencial ausente, inválida ou revogada.", "error": "Unauthorized", "statusCode": 401 }` |
 
 Enums:
 
@@ -357,6 +360,64 @@ Detalhes de cada campo no `API.md`.
     ]
   }
 }
+```
+
+---
+
+## Catálogo e dispositivos
+
+Hierarquia **inquilino → local (site) → área → dispositivo**, com domínios e
+perfis configuráveis.
+
+- **Montagem na subida:** a API monta sozinha o domínio `iluminacao`, o perfil
+  `luminaria-led`, os 9 bairros (com polígono), as ruas com postes (com traçado)
+  e **um dispositivo por poste** (`p-001`…`p-248`).
+- **Referências:** `:ref` aceita o `id` (uuid) ou o slug. Nos dispositivos, o
+  slug é o `codigo`.
+- **Listagens:** todas são paginadas (envelope padrão). Detalhes de cada campo
+  no `API.md`.
+
+```jsonc
+// GET /catalogo/dominios · POST /catalogo/dominios  body: { "slug": "energia", "nome": "Energia", "descricao"?: "..." }
+{ "id": "…", "slug": "iluminacao", "nome": "Iluminação pública", "descricao": "…", "criadoEm": "…", "atualizadoEm": "…", "dispositivos": 248 }
+
+// GET /catalogo/perfis · POST /catalogo/perfis
+{ "id": "…", "slug": "luminaria-led", "nome": "Luminária LED com sensor 360°", "descricao": "…",
+  "grandezas": [ { "grandeza": "potencia", "unidade": "kW", "minimo": 0, "maximo": 0.25 },
+                 { "grandeza": "luminosidade", "unidade": "%", "minimo": 0, "maximo": 100 } ],
+  "intervaloEnvioS": 60, "limiteOfflineS": 180, "dispositivos": 248, "criadoEm": "…", "atualizadoEm": "…" }
+
+// GET /sites · POST /sites · GET /sites/:ref       (geometria GeoJSON, [lon, lat])
+{ "id": "…", "slug": "centro", "nome": "Centro", "tipo": "bairro",
+  "geometria": { "type": "Polygon", "coordinates": [[[-49.604582, -15.920801], "…"]] },
+  "areas": 12, "dispositivos": 53, "criadoEm": "…", "atualizadoEm": "…" }
+
+// GET /sites/:ref/areas · POST /sites/:ref/areas
+{ "id": "…", "slug": "avenida-goias", "nome": "Avenida Goiás", "tipo": "rua",
+  "geometria": { "type": "MultiLineString", "coordinates": [[[-49.606362, -15.922239], "…"]] },
+  "site": { "id": "…", "slug": "centro", "nome": "Centro" }, "dispositivos": 9, "criadoEm": "…", "atualizadoEm": "…" }
+
+// GET /dispositivos?dominio=&perfil=&site=&area=&conexao=online|offline&busca=&ordenar=codigo|nome|firmware|criadoEm|ultimaMensagemEm
+// GET /dispositivos/:ref · PATCH /dispositivos/:ref (mesmos campos do POST, menos codigo)
+{ "id": "…", "codigo": "p-001", "nome": "Luminária P-001",
+  "inquilino": { "id": "…", "slug": "itaguari", "nome": "Prefeitura de Itaguari" },
+  "dominio": { "id": "…", "slug": "iluminacao", "nome": "Iluminação pública" },
+  "perfil": { "id": "…", "slug": "luminaria-led", "nome": "Luminária LED com sensor 360°" },
+  "site": { "id": "…", "slug": "centro", "nome": "Centro" },
+  "area": { "id": "…", "slug": "rua-10", "nome": "Rua 10" },                 // pode ser null
+  "fabricante": "Simulador SmartCity (edge)", "modelo": "LUM-LED-100W", "firmware": "2.4.1",
+  "geo": { "type": "Point", "coordinates": [-49.606176, -15.920691] },      // pode ser null
+  "posteId": "…",                                                          // null fora da iluminação
+  "conexao": { "online": true, "ultimaMensagemEm": "2026-10-21T19:52:11.263Z", "limiteOfflineS": 180 },
+  "credencial": { "ativa": true, "prefixo": "b93557b21ba7", "emitidaEm": "…" },   // ou { "ativa": false }
+  "criadoEm": "…", "atualizadoEm": "…" }
+
+// POST /dispositivos  body: { codigo, nome, dominio, perfil, site, area?, fabricante, modelo?, firmware, latitude?, longitude? }
+// → 201 { "dispositivo": { … }, "credencial": { "token": "dsp_<prefixo>_<segredo>", "prefixo", "emitidaEm", "aviso" } }
+//   o token aparece só aqui · 409 código repetido · 400 referência inexistente
+// POST   /dispositivos/:ref/credenciais → 201 token novo (revoga o anterior)
+// DELETE /dispositivos/:ref/credenciais → 200 { dispositivo, revogadas, revogadaEm } · 404 sem credencial ativa
+// GET    /dispositivos/eu   header Authorization: Bearer <token> → 200 Dispositivo · 401 revogado/inválido
 ```
 
 ---

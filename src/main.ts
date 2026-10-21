@@ -34,6 +34,12 @@ async function bootstrap() {
     .addTag('Arquitetura', 'Estado das camadas edge · fog · nuvem')
     .addTag('OTA', 'Atualização remota de firmware com grupo canário')
     .addTag('Contratos', 'Contrato canônico publicado (JSON Schema e AsyncAPI)')
+    .addTag('Catálogo', 'Domínios, perfis de dispositivo, locais e áreas')
+    .addTag('Dispositivos', 'Cadastro, credenciais e conexão dos dispositivos')
+    .addBearerAuth(
+      { type: 'http', scheme: 'bearer', description: 'Token do dispositivo' },
+      'dispositivo',
+    )
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, config), {
     jsonDocumentUrl: 'docs-json',

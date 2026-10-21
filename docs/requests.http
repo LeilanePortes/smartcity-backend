@@ -81,3 +81,78 @@ GET {{host}}/contratos
 
 ### JSON Schema da mensagem canônica
 GET {{host}}/contratos/v1/mensagem.schema.json
+
+### --- Catálogo (inquilino → local → área → dispositivo) ---
+
+### Domínios do catálogo
+GET {{host}}/catalogo/dominios
+
+### Perfis de dispositivo
+GET {{host}}/catalogo/perfis
+
+### Locais (bairros) com polígono
+GET {{host}}/sites
+
+### Ruas (áreas) de um bairro, com traçado
+GET {{host}}/sites/centro/areas
+
+### Domínio novo sem alterar código (RF-CEN-01): energia
+POST {{host}}/catalogo/dominios
+Content-Type: application/json
+
+{ "slug": "energia", "nome": "Energia", "descricao": "Medidores dos quadros de comando que alimentam os postes de cada bairro." }
+
+### Perfil do medidor (RF-CEN-02): grandezas, unidades UCUM, faixa válida e intervalo
+POST {{host}}/catalogo/perfis
+Content-Type: application/json
+
+{
+  "slug": "medidor-quadro",
+  "nome": "Medidor do quadro de comando",
+  "grandezas": [
+    { "grandeza": "potencia", "unidade": "kW", "minimo": 0, "maximo": 30 },
+    { "grandeza": "tensao", "unidade": "V", "minimo": 180, "maximo": 250 },
+    { "grandeza": "energia", "unidade": "kW.h", "minimo": 0 }
+  ],
+  "intervaloEnvioS": 300
+}
+
+### --- Dispositivos ---
+
+### Lista (filtros: dominio, perfil, site, area, conexao, busca)
+GET {{host}}/dispositivos?dominio=iluminacao&site=centro&tamanho=10
+
+### Só os offline (pelo intervalo de cada perfil)
+GET {{host}}/dispositivos?conexao=offline
+
+### Detalhe pelo código
+GET {{host}}/dispositivos/p-001
+
+### Cadastrar um medidor (a resposta traz o token UMA vez)
+# @name cadastro
+POST {{host}}/dispositivos
+Content-Type: application/json
+
+{
+  "codigo": "medidor-centro",
+  "nome": "Medidor do quadro — Centro",
+  "dominio": "energia",
+  "perfil": "medidor-quadro",
+  "site": "centro",
+  "fabricante": "Medidores Genéricos",
+  "modelo": "MQ-3F",
+  "firmware": "1.0.0",
+  "latitude": -15.920801,
+  "longitude": -49.606172
+}
+
+### O dispositivo se identifica com o token
+GET {{host}}/dispositivos/eu
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+### Revogar a credencial (a próxima chamada acima passa a dar 401)
+DELETE {{host}}/dispositivos/medidor-centro/credenciais
+
+### Emitir uma credencial nova
+POST {{host}}/dispositivos/medidor-centro/credenciais
+
