@@ -33,3 +33,7 @@ export function tokenConfere(token: string, hash: string): boolean {
   const b = Buffer.from(hash, 'hex');
   return a.length === b.length && timingSafeEqual(a, b);
 }
+
+/** Token do cabeçalho `Authorization: Bearer <token>`; undefined se ausente. */
+export const tokenBearer = (cabecalho?: string): string | undefined =>
+  /^Bearer\s+(\S+)$/i.exec(cabecalho ?? '')?.[1];

@@ -231,7 +231,9 @@ model Dispositivo {
   criadoEm         DateTime          @default(now())
   atualizadoEm     DateTime          @updatedAt
 
-  credenciais CredencialDispositivo[]
+  credenciais    CredencialDispositivo[]
+  mensagens      MensagemIngerida[]
+  ultimosValores UltimoValor[]
 
   @@unique([inquilinoId, codigo])
   @@index([dominioId])
@@ -253,4 +255,89 @@ model CredencialDispositivo {
 
   @@index([dispositivoId])
   @@map("credenciais_dispositivo")
+}
+
+// --- Pipeline de ingestão (RF-ING-01 a 04, 06 e 08, RF-PRO-01, RF-DAD-01 e 02)
+// receber → autenticar → validar → deduplicar → ordenar → enriquecer → publicar
+
+/// Mensagem canônica aceita, já enriquecida com o cadastro (inquilino, domínio,
+/// local e área). `idMensagem` único = a mesma mensagem nunca entra duas vezes.
+model MensagemIngerida {
+  id            String      @id @default(uuid())
+  idMensagem    String      @unique /// id_mensagem gerado na origem
+  inquilinoId   String
+  dispositivoId String
+  dispositivo   Dispositivo @relation(fields: [dispositivoId], references: [id], onDelete: Cascade)
+  dominioId     String
+  siteId        String
+  areaId        String?
+  tipo          String /// telemetria | evento | estado
+  medidoEm      DateTime /// horário da medição (é por ele que o histórico é ordenado)
+  recebidoEm    DateTime    @default(now())
+  canal         String /// http | lote | mqtt
+  via           String? /// nó de borda ou gateway
+  atrasada      Boolean /// chegou depois do limite de offline do perfil
+  conteudo      Json /// mensagem canônica enriquecida
+
+  medicoes Medicao[]
+
+  @@index([dispositivoId, medidoEm])
+  @@index([tipo, medidoEm])
+  @@map("mensagens")
+}
+
+/// Série temporal: uma linha por medida de telemetria.
+model Medicao {
+  id             BigInt           @id @default(autoincrement())
+  mensagemId     String
+  mensagem       MensagemIngerida @relation(fields: [mensagemId], references: [id], onDelete: Cascade)
+  inquilinoId    String
+  dispositivoId  String
+  dominioId      String
+  siteId         String
+  areaId         String?
+  grandeza       String
+  valor          Float
+  unidade        String /// unidade do perfil (já normalizada)
+  medidoEm       DateTime
+  suspeita       Boolean          @default(false) /// fora da faixa do perfil
+  motivoSuspeita String?
+
+  @@index([dispositivoId, grandeza, medidoEm])
+  @@index([areaId, grandeza, medidoEm])
+  @@index([siteId, grandeza, medidoEm])
+  @@map("medicoes")
+}
+
+/// Último valor de cada grandeza de cada dispositivo (sem consultar o histórico).
+/// Dado atrasado não sobrescreve um valor mais novo.
+model UltimoValor {
+  dispositivoId String
+  dispositivo   Dispositivo @relation(fields: [dispositivoId], references: [id], onDelete: Cascade)
+  grandeza      String
+  valor         Float
+  unidade       String
+  medidoEm      DateTime
+  suspeita      Boolean     @default(false)
+  atualizadoEm  DateTime    @updatedAt
+
+  @@id([dispositivoId, grandeza])
+  @@map("ultimos_valores")
+}
+
+/// Fila de mensagens inválidas (DLQ): tudo o que o pipeline recusou, com o motivo.
+model MensagemInvalida {
+  id          String   @id @default(uuid())
+  recebidoEm  DateTime @default(now())
+  canal       String
+  etapa       String /// autenticar | validar | enriquecer
+  motivo      String
+  erros       Json /// lista de erros (ex.: os do JSON Schema)
+  dispositivo String?
+  idMensagem  String?
+  topico      String?
+  payload     Json?
+
+  @@index([recebidoEm])
+  @@map("mensagens_invalidas")
 }

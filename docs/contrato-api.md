@@ -422,6 +422,38 @@ perfis configuráveis.
 
 ---
 
+## Ingestão e séries
+
+Pipeline: receber → autenticar → validar → deduplicar → ordenar → enriquecer →
+publicar. Detalhes de cada campo no `API.md`.
+
+```jsonc
+// POST /ingestao   header Authorization: Bearer <token>   body: mensagem canônica v1.0
+// → 202 { "status": "aceita" | "duplicada", "id_mensagem": "…", "atrasada": false }
+// → 400 { "message": "fora do JSON Schema", "etapa": "validar", "erros": ["…"] }   (vai para a fila de inválidas)
+// → 401 token ausente/revogado · 403 mensagem de outro dispositivo
+
+// POST /ingestao/lote   body: [ … ] ou { "mensagens": [ … ] }  (até 5.000)
+{ "total": 5000, "aceitas": 4997, "duplicadas": 0, "recusadas": 3,
+  "resultados": [ { "indice": 10, "id_mensagem": "…", "status": "recusada", "etapa": "validar", "motivo": "…", "erros": ["…"] } ] }
+
+// MQTT (broker da nuvem, :1884): itaguari/{site}/{dominio}/{dispositivo}/{telemetria|evento|estado}
+
+// GET /ingestao/invalidas?canal=&etapa=&dispositivo=   (paginado)
+{ "id": "…", "recebidoEm": "…", "canal": "mqtt", "etapa": "autenticar", "motivo": "…", "erros": ["…"],
+  "dispositivo": "…", "idMensagem": "…", "topico": "…", "payload": { } }
+
+// GET /series?grandeza=potencia&dispositivo=&area=&site=&dominio=&inicio=&fim=&intervalo=auto|bruto|1m|5m|15m|1h|1d
+{ "grandeza": "potencia", "filtros": { … }, "inicio": "…", "fim": "…", "intervalo": "1h", "unidades": ["kW"], "truncada": false,
+  "pontos": [ { "inicio": "…", "media": 0.0546, "minimo": 0.0473, "maximo": 0.0901, "amostras": 463, "suspeitas": 0 } ] }
+  // bruto: pontos = [ { "em": "…", "valor": 12.4, "suspeita": false, "dispositivoId": "…" } ]
+
+// GET /dispositivos/:ref/telemetria?grandeza=&inicio=&fim=&intervalo=   → { dispositivo, inicio, fim, intervalo, series: [ { grandeza, unidades, pontos, … } ] }
+// GET /dispositivos/:ref/ultimos-valores → { dispositivo, valores: [ { grandeza, valor, unidade, medidoEm, suspeita } ] }
+```
+
+---
+
 ## WebSocket — `ws://localhost:3000/tempo-real`
 
 Socket.IO, namespace `/tempo-real`. Sem autenticação. As atualizações ao vivo

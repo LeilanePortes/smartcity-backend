@@ -15,6 +15,7 @@ import { IngestaoModule } from './ingestao/ingestao.module';
 import { OtaModule } from './ota/ota.module';
 import { ContratosModule } from './contratos/contratos.module';
 import { CatalogoModule } from './catalogo/catalogo.module';
+import { PipelineModule } from './pipeline/pipeline.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { CatalogoModule } from './catalogo/catalogo.module';
     OtaModule,
     ContratosModule,
     CatalogoModule,
+    PipelineModule,
   ],
   controllers: [AppController],
   providers: [AppService],

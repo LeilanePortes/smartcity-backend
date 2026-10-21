@@ -156,3 +156,61 @@ DELETE {{host}}/dispositivos/medidor-centro/credenciais
 ### Emitir uma credencial nova
 POST {{host}}/dispositivos/medidor-centro/credenciais
 
+### --- Ingestão (pipeline) ---
+# Use o token do "Cadastrar um medidor" acima (ou de POST /dispositivos/medidor-centro/credenciais).
+
+### Enviar uma mensagem (W é convertido para kW; tensão 260 V fica "suspeita")
+POST {{host}}/ingestao
+Content-Type: application/json
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+{
+  "versao": "1.0",
+  "id_mensagem": "{{$guid}}",
+  "dispositivo": "medidor-centro",
+  "tipo": "telemetria",
+  "timestamp": "{{$datetime iso8601}}",
+  "medidas": [
+    { "grandeza": "potencia", "valor": 12400, "unidade": "W" },
+    { "grandeza": "tensao", "valor": 260, "unidade": "V" }
+  ]
+}
+
+### Mensagem fora do esquema → 400 e fila de inválidas
+POST {{host}}/ingestao
+Content-Type: application/json
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+{ "versao": "1.0", "dispositivo": "medidor-centro", "tipo": "telemetria", "timestamp": "ontem" }
+
+### Lote (resultado por mensagem)
+POST {{host}}/ingestao/lote
+Content-Type: application/json
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+{
+  "mensagens": [
+    { "versao": "1.0", "id_mensagem": "{{$guid}}", "dispositivo": "medidor-centro", "tipo": "telemetria",
+      "timestamp": "{{$datetime iso8601 -48 h}}", "medidas": [ { "grandeza": "potencia", "valor": 9.8, "unidade": "kW" } ] },
+    { "versao": "2.0", "id_mensagem": "{{$guid}}", "dispositivo": "medidor-centro", "tipo": "telemetria",
+      "timestamp": "{{$datetime iso8601}}", "medidas": [] }
+  ]
+}
+
+### Fila de mensagens inválidas
+GET {{host}}/ingestao/invalidas
+
+### --- Séries ---
+
+### Último valor de cada grandeza
+GET {{host}}/dispositivos/medidor-centro/ultimos-valores
+
+### Histórico de um dispositivo (24 h, agregação automática)
+GET {{host}}/dispositivos/p-001/telemetria
+
+### Série por área e domínio, de hora em hora
+GET {{host}}/series?grandeza=potencia&area=avenida-goias&dominio=iluminacao&intervalo=1h
+
+### Série de um bairro nos últimos 30 dias, por dia
+GET {{host}}/series?grandeza=potencia&site=centro&intervalo=1d&inicio=2026-09-22T00:00:00Z
+
