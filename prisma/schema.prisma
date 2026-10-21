@@ -234,6 +234,7 @@ model Dispositivo {
   credenciais    CredencialDispositivo[]
   mensagens      MensagemIngerida[]
   ultimosValores UltimoValor[]
+  alarmes        Alarme[]
 
   @@unique([inquilinoId, codigo])
   @@index([dominioId])
@@ -340,4 +341,96 @@ model MensagemInvalida {
 
   @@index([recebidoEm])
   @@map("mensagens_invalidas")
+}
+
+// --- Regras e alarmes (RF-PRO-02, 03 e 05) --------------------------------
+
+enum SeveridadeAlarme {
+  INFO
+  AVISO
+  CRITICO
+}
+
+enum StatusAlarme {
+  ATIVO
+  RECONHECIDO
+  RESOLVIDO
+}
+
+/// Regra condição → ação, configurada pela API. Escopo opcional por domínio,
+/// local, área (geográfica), perfil ou dispositivo.
+model Regra {
+  id            String           @id @default(uuid())
+  inquilinoId   String
+  nome          String
+  descricao     String?
+  ativa         Boolean          @default(true)
+  dominioId     String?
+  siteId        String?
+  areaId        String?
+  perfilId      String?
+  dispositivoId String?
+  /// { tipo: "limite", grandeza, operador, valor, duracaoS? } | { tipo: "ausencia", duracaoS }
+  condicao      Json
+  severidade    SeveridadeAlarme @default(AVISO)
+  /// [{ tipo: "alarme" | "notificar" | "comando" | "webhook" | "publicar", ... }]
+  acoes         Json
+  criadoEm      DateTime         @default(now())
+  atualizadoEm  DateTime         @updatedAt
+
+  alarmes   Alarme[]
+  execucoes ExecucaoAcao[]
+
+  @@index([inquilinoId, ativa])
+  @@map("regras")
+}
+
+/// Alarme com ciclo de vida: ATIVO → RECONHECIDO → RESOLVIDO.
+model Alarme {
+  id             String           @id @default(uuid())
+  inquilinoId    String
+  regraId        String?
+  regra          Regra?           @relation(fields: [regraId], references: [id], onDelete: SetNull)
+  dispositivoId  String
+  dispositivo    Dispositivo      @relation(fields: [dispositivoId], references: [id], onDelete: Cascade)
+  origem         String /// regra (central) | borda (diagnóstico do fog)
+  severidade     SeveridadeAlarme
+  status         StatusAlarme     @default(ATIVO)
+  titulo         String
+  detalhe        String?
+  grandeza       String?
+  valor          Float?
+  ocorridoEm     DateTime /// quando aconteceu (hora da medição ou do diagnóstico na borda)
+  criadoEm       DateTime         @default(now())
+  reconhecidoEm  DateTime?
+  reconhecidoPor String?
+  resolvidoEm    DateTime?
+  resolvidoPor   String? /// usuário, ou "automático" quando a condição deixa de valer
+  comentario     String?
+
+  execucoes ExecucaoAcao[]
+
+  @@index([status, severidade])
+  @@index([dispositivoId, status])
+  @@index([regraId, status])
+  @@map("alarmes")
+}
+
+/// Cada ação disparada por uma regra, com o resultado e as tentativas.
+model ExecucaoAcao {
+  id          String    @id @default(uuid())
+  regraId     String?
+  regra       Regra?    @relation(fields: [regraId], references: [id], onDelete: SetNull)
+  alarmeId    String?
+  alarme      Alarme?   @relation(fields: [alarmeId], references: [id], onDelete: SetNull)
+  tipo        String /// alarme | notificar | comando | webhook | publicar
+  destino     String?
+  status      String /// ok | falha
+  tentativas  Int       @default(1)
+  erro        String?
+  criadoEm    DateTime  @default(now())
+  concluidoEm DateTime?
+
+  @@index([regraId, criadoEm])
+  @@map("execucoes_acao")
 }

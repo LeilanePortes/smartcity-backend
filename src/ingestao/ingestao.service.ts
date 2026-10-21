@@ -32,6 +32,7 @@ import {
 } from '../simulador/simulador.events';
 import { EstadoCamadasService } from './estado-camadas.service';
 import {
+  EVENTO_NUVEM_ALERTA,
   EVENTO_NUVEM_OTA_RESULTADO,
   EVENTO_NUVEM_RESUMO,
 } from './ingestao.events';
@@ -238,6 +239,7 @@ export class IngestaoService implements OnModuleInit, OnModuleDestroy {
 
   private async aoAlerta(msg: MsgAlerta): Promise<void> {
     this.estado.registrarAlerta(msg);
+    this.eventEmitter.emit(EVENTO_NUVEM_ALERTA, msg);
     this.logger.log(
       `Alerta do fog (${msg.bairro}) · ${msg.codigo}: ${msg.statusAnterior} → ${msg.status} — ${msg.motivo}`,
     );

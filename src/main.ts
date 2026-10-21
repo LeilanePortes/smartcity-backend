@@ -41,6 +41,8 @@ async function bootstrap() {
     .addTag('Dispositivos', 'Cadastro, credenciais e conexão dos dispositivos')
     .addTag('Ingestão', 'Pipeline: HTTP, lote e fila de mensagens inválidas')
     .addTag('Séries', 'Séries temporais e último valor de cada grandeza')
+    .addTag('Regras', 'Regras condição → ação e as ações executadas')
+    .addTag('Alarmes', 'Alarmes com severidade e ciclo de vida')
     .addBearerAuth(
       { type: 'http', scheme: 'bearer', description: 'Token do dispositivo' },
       'dispositivo',
