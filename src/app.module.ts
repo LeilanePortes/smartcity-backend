@@ -14,6 +14,7 @@ import { TempoRealModule } from './tempo-real/tempo-real.module';
 import { IngestaoModule } from './ingestao/ingestao.module';
 import { OtaModule } from './ota/ota.module';
 import { ContratosModule } from './contratos/contratos.module';
+import { CatalogoModule } from './catalogo/catalogo.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { ContratosModule } from './contratos/contratos.module';
     IngestaoModule,
     OtaModule,
     ContratosModule,
+    CatalogoModule,
   ],
   controllers: [AppController],
   providers: [AppService],

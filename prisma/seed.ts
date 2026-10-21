@@ -7,6 +7,7 @@ import {
   TOTAL_POSTES,
   UF,
 } from '../src/common/constants';
+import { OPCOES_POSICIONAMENTO } from './dados/bairros-itaguari';
 import {
   posicionarPostes,
   PostePosicionado,
@@ -14,9 +15,6 @@ import {
 } from './dados/posicionar-postes';
 
 const prisma = new PrismaClient();
-
-// Centro real de Itaguari, GO.
-const CENTRO = { lat: -15.920801, lon: -49.606172 };
 
 // Ruas reais do núcleo urbano, baixadas do OpenStreetMap por
 // `prisma/dados/baixar-ruas.ts` (© colaboradores do OpenStreetMap, ODbL).
@@ -54,22 +52,8 @@ function gerarPostes(): PostePosicionado[] {
     ruas: RuaOsm[];
   };
   return posicionarPostes(ruas, {
-    centro: CENTRO,
+    ...OPCOES_POSICIONAMENTO,
     total: TOTAL_POSTES,
-    espacamentoM: 35,
-    distanciaMinimaM: 20,
-    raioCentroM: 170,
-    bairroCentral: 'Centro',
-    bairrosPorDirecao: [
-      'Setor Leste',
-      'Setor Industrial',
-      'Setor Norte',
-      'Vila Nova',
-      'Setor Oeste',
-      'Residencial Bela Vista',
-      'Setor Sul',
-      'Jardim Primavera',
-    ],
   });
 }
 
@@ -152,7 +136,8 @@ async function main(): Promise<void> {
     };
   });
 
-  // Limpa e recria a rede (seed idempotente).
+  // Limpa e recria a rede (seed idempotente). Os dispositivos dos postes ficam
+  // (com `posteId` nulo) e `prisma/catalogo.ts` os religa pelo código.
   await prisma.agregadoConsumo.deleteMany();
   await prisma.eventoSensor.deleteMany();
   await prisma.leituraTelemetria.deleteMany();

@@ -122,6 +122,7 @@ SIMULADOR_INTERVALO_TELEMETRIA_MS=3000 bun run start:dev
 | `bun run prisma:studio` | Prisma Studio (inspeção visual do banco) |
 | `bun run db:seed` | Popula a rede de 248 postes (idempotente) |
 | `bun run db:backfill` | Histórico: telemetria/eventos (`DIAS_RAW`) + agregados diários (`DIAS_AGREGADO`) |
+| `bun run db:catalogo` | Catálogo: inquilino, domínio `iluminacao`, perfil, bairros, ruas e um dispositivo por poste (idempotente; o container roda a cada subida) |
 | `bun run db:reset` | Recria o banco do zero e roda o seed |
 | `bun run build` / `bun run lint` | Compila para `dist/` · oxlint |
 | `bun run test` | Testes unitários (Jest) |
@@ -141,6 +142,23 @@ Entidades em `prisma/schema.prisma` (PRD seção 7):
 - **AgregadoConsumo** — consumo e custo agregados por período (`posteId` nulo = rede inteira).
 
 Enums: `StatusPoste`, `TipoEventoSensor`, `SentidoVeiculo`, `PeriodoAgregado`.
+
+**Catálogo da plataforma** (RF-CEN-01 a 03, RF-DIS-01, 02 e 06). Segue a hierarquia
+inquilino → local → área → dispositivo:
+
+- **Inquilino** — organização dona dos dados (`itaguari`, Prefeitura de Itaguari).
+- **Site** (local) e **Area** — bairros e ruas, com geometria GeoJSON.
+- **Dominio** — catálogo configurável (`iluminacao`; outros são criados pela API).
+- **PerfilDispositivo** — grandezas, unidades UCUM, faixa válida e intervalo
+  esperado de envio. Não pertence a um domínio, então é reutilizável entre projetos.
+- **Dispositivo** — perfil, domínio, local, área, fabricante, modelo e firmware.
+  Os 248 postes são dispositivos do domínio `iluminacao`, ligados pelo `posteId`.
+- **CredencialDispositivo** — um token por dispositivo. Só o hash fica guardado, e
+  a credencial pode ser revogada.
+
+O catálogo inicial é montado por [`prisma/catalogo.ts`](./prisma/catalogo.ts), que
+roda a cada subida do container sem apagar nada. Endpoints em
+[`API.md`](./API.md#catálogo).
 
 ## Seed
 

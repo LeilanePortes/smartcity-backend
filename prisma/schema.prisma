@@ -55,9 +55,10 @@ model Poste {
   criadoEm             DateTime    @default(now())
   atualizadoEm         DateTime    @updatedAt
 
-  leituras  LeituraTelemetria[]
-  eventos   EventoSensor[]
-  agregados AgregadoConsumo[]
+  leituras    LeituraTelemetria[]
+  eventos     EventoSensor[]
+  agregados   AgregadoConsumo[]
+  dispositivo Dispositivo?
 
   @@index([status])
   @@index([bairro])
@@ -106,4 +107,150 @@ model AgregadoConsumo {
   @@unique([posteId, periodo, periodoInicio])
   @@index([periodo, periodoInicio])
   @@map("agregados_consumo")
+}
+
+// --- Catálogo da plataforma (RF-CEN-01 a 03, RF-DIS-01, 02 e 06) -----------
+// Hierarquia: inquilino → local (site) → área → dispositivo. Domínios e perfis
+// são dados do inquilino, não código: um domínio novo nasce por configuração.
+
+/// Organização dona dos dados (ex.: Prefeitura de Itaguari).
+model Inquilino {
+  id           String   @id @default(uuid())
+  slug         String   @unique /// usado nos tópicos MQTT: {inquilino}/...
+  nome         String
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  sites        Site[]
+  dominios     Dominio[]
+  perfis       PerfilDispositivo[]
+  dispositivos Dispositivo[]
+
+  @@map("inquilinos")
+}
+
+/// Local (site): bairro na cidade, fazenda no campo. Geometria GeoJSON.
+model Site {
+  id           String    @id @default(uuid())
+  inquilinoId  String
+  inquilino    Inquilino @relation(fields: [inquilinoId], references: [id], onDelete: Cascade)
+  slug         String
+  nome         String
+  tipo         String    @default("bairro") /// livre: bairro, fazenda, campus...
+  geometria    Json? /// GeoJSON (Point ou Polygon), coordenadas [lon, lat]
+  criadoEm     DateTime  @default(now())
+  atualizadoEm DateTime  @updatedAt
+
+  areas        Area[]
+  dispositivos Dispositivo[]
+
+  @@unique([inquilinoId, slug])
+  @@map("sites")
+}
+
+/// Área dentro de um local: rua, praça, talhão, silo. Geometria GeoJSON.
+model Area {
+  id           String   @id @default(uuid())
+  siteId       String
+  site         Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  slug         String
+  nome         String
+  tipo         String   @default("rua") /// livre: rua, praca, talhao, silo...
+  geometria    Json? /// GeoJSON (Point, LineString, MultiLineString, Polygon...)
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  dispositivos Dispositivo[]
+
+  @@unique([siteId, slug])
+  @@map("areas")
+}
+
+/// Domínio do catálogo do inquilino (iluminacao, energia, pecuaria...).
+model Dominio {
+  id           String    @id @default(uuid())
+  inquilinoId  String
+  inquilino    Inquilino @relation(fields: [inquilinoId], references: [id], onDelete: Cascade)
+  slug         String /// usado nos tópicos MQTT: .../{dominio}/...
+  nome         String
+  descricao    String?
+  criadoEm     DateTime  @default(now())
+  atualizadoEm DateTime  @updatedAt
+
+  dispositivos Dispositivo[]
+
+  @@unique([inquilinoId, slug])
+  @@map("dominios")
+}
+
+/// Perfil de dispositivo: grandezas, unidades, faixa válida e intervalo
+/// esperado de envio. Não pertence a um domínio: é reutilizável entre projetos.
+model PerfilDispositivo {
+  id              String    @id @default(uuid())
+  inquilinoId     String
+  inquilino       Inquilino @relation(fields: [inquilinoId], references: [id], onDelete: Cascade)
+  slug            String
+  nome            String
+  descricao       String?
+  /// [{ grandeza, unidade (UCUM), minimo?, maximo? }]
+  grandezas       Json
+  intervaloEnvioS Int /// intervalo esperado entre mensagens, em segundos
+  criadoEm        DateTime  @default(now())
+  atualizadoEm    DateTime  @updatedAt
+
+  dispositivos Dispositivo[]
+
+  @@unique([inquilinoId, slug])
+  @@map("perfis_dispositivo")
+}
+
+/// Dispositivo cadastrado na plataforma. Os 248 postes são dispositivos do
+/// domínio "iluminacao" (ligados ao poste pelo `posteId`).
+model Dispositivo {
+  id               String            @id @default(uuid())
+  inquilinoId      String
+  inquilino        Inquilino         @relation(fields: [inquilinoId], references: [id], onDelete: Cascade)
+  codigo           String /// usado nos tópicos MQTT: .../{dispositivo}/...
+  nome             String
+  dominioId        String
+  dominio          Dominio           @relation(fields: [dominioId], references: [id], onDelete: Restrict)
+  perfilId         String
+  perfil           PerfilDispositivo @relation(fields: [perfilId], references: [id], onDelete: Restrict)
+  siteId           String
+  site             Site              @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  areaId           String?
+  area             Area?             @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  fabricante       String
+  modelo           String?
+  firmware         String
+  latitude         Float?
+  longitude        Float?
+  posteId          String?           @unique
+  poste            Poste?            @relation(fields: [posteId], references: [id], onDelete: SetNull)
+  ultimaMensagemEm DateTime?
+  criadoEm         DateTime          @default(now())
+  atualizadoEm     DateTime          @updatedAt
+
+  credenciais CredencialDispositivo[]
+
+  @@unique([inquilinoId, codigo])
+  @@index([dominioId])
+  @@index([siteId])
+  @@index([perfilId])
+  @@map("dispositivos")
+}
+
+/// Credencial (token) de um dispositivo. Só o hash fica guardado: o token é
+/// mostrado uma única vez, na emissão. Revogada = recusada na próxima conexão.
+model CredencialDispositivo {
+  id            String      @id @default(uuid())
+  dispositivoId String
+  dispositivo   Dispositivo @relation(fields: [dispositivoId], references: [id], onDelete: Cascade)
+  prefixo       String      @unique /// parte pública do token, para localizar a credencial
+  hash          String /// SHA-256 do token completo
+  emitidaEm     DateTime    @default(now())
+  revogadaEm    DateTime?
+
+  @@index([dispositivoId])
+  @@map("credenciais_dispositivo")
 }

@@ -33,5 +33,10 @@ case "${DB_BOOTSTRAP:-auto}" in
     ;;
 esac
 
+# Catálogo (inquilino, domínio, perfil, locais, áreas e um dispositivo por
+# poste). Idempotente: roda sempre e não apaga nada.
+echo "[entrypoint] atualizando o catálogo de dispositivos..."
+bun run prisma/catalogo.ts
+
 echo "[entrypoint] iniciando a API na porta ${PORT:-3000}..."
 exec "$@"
