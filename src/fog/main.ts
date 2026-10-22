@@ -1,27 +1,42 @@
+import { createServer } from 'node:http';
+import { join } from 'node:path';
+import { derivarChave, FilaPersistente } from './fila-persistente';
+import { IngestaoLocal } from './ingestao-local';
+import type { MensagemLocal } from './ingestao-local';
+import { rastroAtivo, registrar } from '../observabilidade/log';
+import { RegistroMetricas } from '../observabilidade/metricas';
 import { StatusPoste } from '@prisma/client';
 import { connect, MqttClient } from 'mqtt';
 import { provisionar } from '../common/provisionamento';
 import {
   assinaturaNuvem,
-  assinaturaTodosPostes,
   MsgAlerta,
   MsgComandoNuvem,
-  MsgEvento,
   MsgEdgeEstado,
   MsgFogEstado,
   MsgFogTrafego,
   MsgOtaNuvem,
-  MsgOtaResultado,
-  MsgSaude,
-  MsgTelemetria,
   parseTopicoNuvem,
-  parseTopicoPoste,
   slugBairro,
   TOPICO_EDGE_ESTADO,
   TOPICO_FOG_ESTADO,
   TOPICO_FOG_TRAFEGO,
   topicoNuvem,
 } from '../common/topicos-mqtt';
+import {
+  comandoAtualizarFirmware,
+  comandoDefinirStatus,
+  lerEventoSensor,
+  lerOtaResultado,
+  lerSaude,
+  lerTelemetria,
+} from '../common/codec-iluminacao';
+import {
+  assinaturaDominio,
+  DOMINIO_ILUMINACAO,
+  parseTopicoDispositivo,
+  validarMensagem,
+} from '../common/contrato';
 import { FogConfig, lerFogConfig } from './fog.config';
 import { GatewayBairro } from './gateway';
 
@@ -35,7 +50,50 @@ import { GatewayBairro } from './gateway';
  * enviado em ordem quando a conexão volta (store-and-forward).
  */
 
-const log = (msg: string): void => console.log(`[fog] ${msg}`);
+const log = (msg: string, campos?: Record<string, unknown>): void =>
+  registrar('info', 'fog', msg, campos);
+
+/// Métricas do nó de borda (RF-OBS-01), em GET :FOG_METRICAS_PORTA/metrics.
+const metricasFog = new RegistroMetricas();
+const MF = {
+  mensagens: metricasFog.contador(
+    'fog_mensagens_total',
+    'Mensagens do fog por direção: entrada (campo), saida (nuvem), invalida (fora do contrato).',
+  ),
+  bytes: metricasFog.contador('fog_bytes_total', 'Bytes do fog por direção.'),
+  alertas: metricasFog.contador(
+    'fog_alertas_total',
+    'Diagnósticos enviados à nuvem, por status novo.',
+  ),
+  buffer: metricasFog.medidor(
+    'fog_buffer_mensagens',
+    'Mensagens guardadas esperando a nuvem.',
+  ),
+  online: metricasFog.medidor(
+    'fog_postes_online',
+    'Postes que reportaram na última janela.',
+  ),
+  filaLocal: metricasFog.medidor(
+    'fog_fila_ingestao_pendentes',
+    'Mensagens da ingestão local esperando sincronizar com a central.',
+  ),
+};
+
+function servirMetricas(porta: number): void {
+  createServer((req, res) => {
+    if (req.url !== '/metrics') {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+    });
+    res.end(metricasFog.texto());
+  }).listen(porta, () => log(`métricas em :${porta}/metrics`));
+}
+
+/// Identificação do gateway no campo `via` das mensagens que ele emite.
+const viaFog = (bairro: string): string => `fog-${slugBairro(bairro)}`;
 
 interface Publicacao {
   topico: string;
@@ -48,6 +106,8 @@ class Trafego {
   entradaBytes = 0;
   saidaMsgs = 0;
   saidaBytes = 0;
+  /// Mensagens do campo descartadas por estarem fora do contrato.
+  invalidas = 0;
 
   /** Fecha a janela: devolve os números (para a nuvem) e o texto (para o log). */
   fecharJanela(buffer: number): {
@@ -71,25 +131,37 @@ class Trafego {
       `campo → fog: ${this.entradaMsgs} msgs (${kb(this.entradaBytes)}) | ` +
       `fog → nuvem: ${this.saidaMsgs} msgs (${kb(this.saidaBytes)}) | ` +
       `redução ${pct(numeros.reducaoMsgsPct)} msgs, ` +
-      `${pct(numeros.reducaoBytesPct)} bytes · buffer ${buffer}`;
+      `${pct(numeros.reducaoBytesPct)} bytes · buffer ${buffer}` +
+      (this.invalidas ? ` · ${this.invalidas} fora do contrato` : '');
     this.entradaMsgs = this.entradaBytes = this.saidaMsgs = this.saidaBytes = 0;
+    this.invalidas = 0;
     return { numeros, texto };
   }
 }
 
-/// Uplink com buffer: publica se a nuvem está no ar, senão guarda.
+/// Prioridade no buffer: alarmes e resultados de OTA antes de eventos, e
+/// eventos antes dos resumos de telemetria (RF-EDG-05).
+const prioridadeDo = (topico: string): number =>
+  /\/(alerta|ota-resultado)$/.test(topico)
+    ? 0
+    : topico.endsWith('/evento')
+      ? 1
+      : 2;
+
+/// Uplink com buffer persistente e cifrado: publica se a nuvem está no ar,
+/// senão guarda no disco (sobrevive a reinício do fog) até a nuvem voltar.
 class Uplink {
-  private readonly fila: Publicacao[] = [];
-  private descartadas = 0;
+  private confirmados: string[] = [];
+  private timerConfirmacao: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly cliente: MqttClient,
-    private readonly max: number,
+    private readonly fila: FilaPersistente<Publicacao>,
     private readonly trafego: Trafego,
   ) {}
 
   get pendentes(): number {
-    return this.fila.length;
+    return this.fila.pendentes;
   }
 
   enviar(p: Publicacao): void {
@@ -97,31 +169,43 @@ class Uplink {
       this.publicar(p);
       return;
     }
-    this.fila.push(p);
-    if (this.fila.length > this.max) {
-      this.fila.shift();
-      this.descartadas++;
-    }
+    this.fila.adicionar(p, prioridadeDo(p.topico));
   }
 
-  /** Esvazia o buffer em ordem (chamado quando o uplink reconecta). */
+  /**
+   * Esvazia o buffer por prioridade quando o uplink reconecta. Cada item só
+   * sai do disco depois do PUBACK da nuvem (QoS 1).
+   */
   drenar(): void {
-    if (!this.fila.length) return;
-    const total = this.fila.length;
-    while (this.fila.length && this.cliente.connected) {
-      this.publicar(this.fila.shift()!);
+    const lote = this.fila.proximos(this.fila.pendentes);
+    if (!lote.length) return;
+    for (const item of lote) {
+      if (!this.cliente.connected) break;
+      this.publicar(item.dados, (erro) => {
+        if (!erro) this.confirmar(item.id);
+      });
     }
     log(
-      `uplink restabelecido: ${total} mensagens do buffer enviadas à nuvem` +
-        (this.descartadas
-          ? ` (${this.descartadas} descartadas por buffer cheio)`
+      `uplink restabelecido: ${lote.length} mensagens do buffer enviadas à nuvem (alarmes primeiro)` +
+        (this.fila.descartadas
+          ? ` (${this.fila.descartadas} descartadas por buffer cheio)`
           : ''),
     );
-    this.descartadas = 0;
+    this.fila.descartadas = 0;
   }
 
-  private publicar(p: Publicacao): void {
-    this.cliente.publish(p.topico, p.payload, { qos: 1 });
+  /** Junta as confirmações e regrava o arquivo uma vez por segundo. */
+  private confirmar(id: string): void {
+    this.confirmados.push(id);
+    this.timerConfirmacao ??= setTimeout(() => {
+      this.fila.confirmar(this.confirmados);
+      this.confirmados = [];
+      this.timerConfirmacao = null;
+    }, 1_000);
+  }
+
+  private publicar(p: Publicacao, aoConfirmar?: (erro?: Error) => void): void {
+    this.cliente.publish(p.topico, p.payload, { qos: 1 }, aoConfirmar);
     this.trafego.saidaMsgs++;
     this.trafego.saidaBytes += p.payload.length;
   }
@@ -149,6 +233,7 @@ function iniciar(
   gateways: Map<string, GatewayBairro>,
 ): void {
   const trafego = new Trafego();
+  servirMetricas(config.metricasPorta);
   const totalPostes = [...gateways.values()].reduce((n, g) => n + g.total, 0);
 
   // --- Uplink (broker da nuvem) ----------------------------------------
@@ -165,7 +250,32 @@ function iniciar(
       retain: true,
     },
   });
-  const uplink = new Uplink(nuvem, config.bufferMax, trafego);
+  const chave = derivarChave(config.chaveFila);
+  const uplink = new Uplink(
+    nuvem,
+    new FilaPersistente<Publicacao>(
+      join(config.dadosDir, 'uplink.fila'),
+      chave,
+      config.bufferMax,
+    ),
+    trafego,
+  );
+  if (uplink.pendentes)
+    log(
+      `${uplink.pendentes} mensagens recuperadas do disco (buffer do uplink)`,
+    );
+
+  // Ingestão local por HTTP (RF-EDG-01) e sincronização em lotes (RF-EDG-02).
+  const local = new IngestaoLocal(
+    new FilaPersistente<MensagemLocal>(
+      join(config.dadosDir, 'ingestao.fila'),
+      chave,
+      config.bufferMax,
+    ),
+    config.apiUrl,
+  );
+  local.servir(config.httpPorta);
+  setInterval(() => void local.sincronizar(), config.intervaloSyncMs);
 
   nuvem.on('connect', () => {
     log(`uplink conectado à nuvem ${config.mqttNuvemUrl}`);
@@ -194,10 +304,9 @@ function iniciar(
     log(`conectado ao broker do campo ${config.mqttLocalUrl}`);
     campo.subscribe(
       [
-        assinaturaTodosPostes('telemetria'),
-        assinaturaTodosPostes('evento'),
-        assinaturaTodosPostes('saude'),
-        assinaturaTodosPostes('ota-resultado'),
+        assinaturaDominio(DOMINIO_ILUMINACAO, 'telemetria'),
+        assinaturaDominio(DOMINIO_ILUMINACAO, 'evento'),
+        assinaturaDominio(DOMINIO_ILUMINACAO, 'estado'),
         TOPICO_EDGE_ESTADO,
       ],
       { qos: 1 },
@@ -207,6 +316,7 @@ function iniciar(
 
   const enviarAlertas = (alertas: MsgAlerta[]): void => {
     for (const a of alertas) {
+      MF.alertas.inc({ status: a.status });
       log(
         `alerta ${a.bairro} · ${a.codigo}: ${a.statusAnterior} → ${a.status} (${a.motivo})`,
       );
@@ -229,35 +339,55 @@ function iniciar(
       }
       return;
     }
-    const alvo = parseTopicoPoste(topico);
-    const gateway = alvo && gateways.get(alvo.bairroSlug);
-    if (!alvo || !gateway) return;
+    const alvo = parseTopicoDispositivo(topico);
+    const gateway = alvo && gateways.get(alvo.site);
+    if (!alvo || !gateway || alvo.dominio !== DOMINIO_ILUMINACAO) return;
     trafego.entradaMsgs++;
     trafego.entradaBytes += payload.length;
 
-    if (alvo.grandeza === 'telemetria') {
-      const msg = lerJson<MsgTelemetria>(payload);
-      if (msg) enviarAlertas(gateway.receberTelemetria(msg));
-    } else if (alvo.grandeza === 'evento') {
-      const msg = lerJson<MsgEvento>(payload);
-      const evento = msg && gateway.receberEvento(msg);
+    // Toda mensagem do campo é validada contra o contrato v1.0.
+    const validacao = validarMensagem(payload);
+    if (!validacao.valida) {
+      trafego.invalidas++;
+      log(
+        `mensagem fora do contrato em ${topico}: ${validacao.erros.join('; ')}`,
+      );
+      return;
+    }
+    const m = validacao.mensagem;
+    const posteId = gateway.idDe(m.dispositivo);
+    if (!posteId || m.dispositivo !== alvo.dispositivo) return;
+
+    if (m.tipo === 'telemetria') {
+      const t = lerTelemetria(m);
+      if (t) enviarAlertas(gateway.receberTelemetria({ ...t, posteId }));
+    } else if (m.tipo === 'estado') {
+      const e = lerSaude(m);
+      if (e) gateway.receberSaude({ ...e, posteId });
+    } else if (m.tipo === 'evento') {
+      // Resultado de OTA sobe na hora: é ele que a nuvem usa para decidir as ondas.
+      const ota = lerOtaResultado(m);
+      if (ota) {
+        uplink.enviar({
+          topico: topicoNuvem(gateway.bairro, 'ota-resultado'),
+          payload: JSON.stringify({ ...ota, posteId }),
+        });
+        return;
+      }
+      const sensor = lerEventoSensor(m);
+      const evento = sensor && gateway.receberEvento({ ...sensor, posteId });
       if (evento) {
         uplink.enviar({
           topico: topicoNuvem(gateway.bairro, 'evento'),
-          payload: JSON.stringify(evento),
+          payload: JSON.stringify({ ...evento, correlacao: m.id_mensagem }),
         });
-      }
-    } else if (alvo.grandeza === 'saude') {
-      const msg = lerJson<MsgSaude>(payload);
-      if (msg) gateway.receberSaude(msg);
-    } else if (alvo.grandeza === 'ota-resultado') {
-      // Resultado de OTA sobe na hora: é ele que a nuvem usa para decidir as ondas.
-      const msg = lerJson<MsgOtaResultado>(payload);
-      if (msg) {
-        uplink.enviar({
-          topico: topicoNuvem(gateway.bairro, 'ota-resultado'),
-          payload: JSON.stringify(msg),
-        });
+        if (rastroAtivo()) {
+          registrar('debug', 'fog', 'evento repassado à nuvem', {
+            correlacao: m.id_mensagem,
+            dispositivo: m.dispositivo,
+            bairro: gateway.bairro,
+          });
+        }
       }
     }
   });
@@ -270,11 +400,18 @@ function iniciar(
 
     if (alvo.grandeza === 'ota') {
       const ota = lerJson<MsgOtaNuvem>(payload);
-      const destino = ota && gateway.topicoNoCampo(ota.codigo, 'ota');
+      const destino = ota && gateway.topicoComando(ota.codigo);
       if (!ota || !destino) return;
       campo.publish(
         destino,
-        JSON.stringify({ versao: ota.versao, em: ota.em }),
+        JSON.stringify(
+          comandoAtualizarFirmware(
+            ota.codigo,
+            ota.versao,
+            ota.em,
+            viaFog(gateway.bairro),
+          ),
+        ),
         { qos: 1 },
       );
       log(`OTA repassada ao campo: ${ota.codigo} → ${ota.versao}`);
@@ -291,9 +428,18 @@ function iniciar(
     }
     const destino = gateway.aplicarComando(msg.codigo, msg.status);
     if (!destino) return;
-    campo.publish(destino, JSON.stringify({ status: msg.status, em: msg.em }), {
-      qos: 1,
-    });
+    campo.publish(
+      destino,
+      JSON.stringify(
+        comandoDefinirStatus(
+          msg.codigo,
+          msg.status,
+          msg.em,
+          viaFog(gateway.bairro),
+        ),
+      ),
+      { qos: 1 },
+    );
     log(`comando repassado ao campo: ${msg.codigo} → ${msg.status}`);
   });
 
@@ -328,7 +474,15 @@ function iniciar(
         payload: JSON.stringify(resumo),
       });
     }
+    MF.mensagens.inc({ direcao: 'invalida' }, trafego.invalidas);
     const { numeros, texto } = trafego.fecharJanela(uplink.pendentes);
+    MF.mensagens.inc({ direcao: 'entrada' }, numeros.entrada.msgs);
+    MF.mensagens.inc({ direcao: 'saida' }, numeros.saida.msgs);
+    MF.bytes.inc({ direcao: 'entrada' }, numeros.entrada.bytes);
+    MF.bytes.inc({ direcao: 'saida' }, numeros.saida.bytes);
+    MF.buffer.set(uplink.pendentes);
+    MF.filaLocal.set(local.pendentes);
+    MF.online.set(online);
     log(
       `janela ${config.janelaResumoMs / 1000}s · ${online}/${totalPostes} postes no ar · ${texto}`,
     );
@@ -370,7 +524,11 @@ function iniciar(
 async function main(): Promise<void> {
   const config = lerFogConfig();
   log(`provisionando gateways a partir de ${config.apiUrl}...`);
-  const postes = await provisionar(config.apiUrl, log);
+  const postes = await provisionar(
+    config.apiUrl,
+    log,
+    join(config.dadosDir, 'provisionamento.json'),
+  );
 
   // Um gateway por bairro, cada um só com os postes do seu bairro.
   const porBairro = new Map<string, typeof postes>();

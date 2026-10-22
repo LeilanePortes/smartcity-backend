@@ -1,3 +1,7 @@
+/// Prefixo da API REST versionada (RF-APP-01). Uma versão nova seria /api/v2,
+/// mantendo a v1 no ar enquanto os clientes migram (RNF-17).
+export const PREFIXO_API = 'api/v1';
+
 /// Tarifa de referência do mock: classe B4a (iluminação pública), em R$/kWh (PRD seção 6).
 export const TARIFA_B4A_KWH = 0.58;
 

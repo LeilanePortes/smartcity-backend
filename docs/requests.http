@@ -1,26 +1,27 @@
 # Exemplos de requisição — REST Client (VS Code) / IntelliJ HTTP Client.
 # Rode a API com `bun run start:dev`.
 
-@host = http://localhost:3000
+@raiz = http://localhost:3000
+@host = {{raiz}}/api/v1
 # Troque por um id real vindo de GET /postes:
 @posteId = COLE_UM_ID_AQUI
 
-### Info + documentação
-GET {{host}}/
+### Info + documentação (única rota fora de /api/v1)
+GET {{raiz}}/
 
-### Swagger UI  →  abrir {{host}}/docs no navegador
-GET {{host}}/docs-json
+### Swagger UI  →  abrir {{raiz}}/docs no navegador
+GET {{raiz}}/docs-json
 
 ### --- Postes ---
 
 ### Lista completa (mapa)
-GET {{host}}/postes
+GET {{host}}/postes?tamanho=500
 
 ### Filtro por status
 GET {{host}}/postes?status=FALHA_OFFLINE
 
 ### Busca por rua/bairro
-GET {{host}}/postes?busca=centro
+GET {{host}}/postes?busca=centro&ordenar=-consumoInstantaneoKw
 
 ### Detalhe
 GET {{host}}/postes/{{posteId}}
@@ -29,7 +30,7 @@ GET {{host}}/postes/{{posteId}}
 GET {{host}}/postes/{{posteId}}/telemetria?periodo=semana
 
 ### Log do sensor 360°
-GET {{host}}/postes/{{posteId}}/eventos?limite=10
+GET {{host}}/postes/{{posteId}}/eventos?tamanho=10
 
 ### Agendar manutenção
 PATCH {{host}}/postes/{{posteId}}/status
@@ -49,7 +50,7 @@ Content-Type: application/json
 GET {{host}}/kpis?periodo=mes
 
 ### Ranking de maior consumo
-GET {{host}}/kpis/maior-consumo?periodo=semana&limite=5
+GET {{host}}/kpis/maior-consumo?periodo=semana&tamanho=5
 
 ### Postes por status
 GET {{host}}/kpis/postes-por-status
@@ -72,3 +73,198 @@ Content-Type: application/json
 
 ### Reverter a implantação em andamento
 POST {{host}}/ota/reverter
+
+### --- Contratos ---
+
+### Versões do contrato canônico
+GET {{host}}/contratos
+
+### JSON Schema da mensagem canônica
+GET {{host}}/contratos/v1/mensagem.schema.json
+
+### --- Catálogo (inquilino → local → área → dispositivo) ---
+
+### Domínios do catálogo
+GET {{host}}/catalogo/dominios
+
+### Perfis de dispositivo
+GET {{host}}/catalogo/perfis
+
+### Locais (bairros) com polígono
+GET {{host}}/sites
+
+### Ruas (áreas) de um bairro, com traçado
+GET {{host}}/sites/centro/areas
+
+### Domínio novo sem alterar código (RF-CEN-01): energia
+POST {{host}}/catalogo/dominios
+Content-Type: application/json
+
+{ "slug": "energia", "nome": "Energia", "descricao": "Medidores dos quadros de comando que alimentam os postes de cada bairro." }
+
+### Perfil do medidor (RF-CEN-02): grandezas, unidades UCUM, faixa válida e intervalo
+POST {{host}}/catalogo/perfis
+Content-Type: application/json
+
+{
+  "slug": "medidor-quadro",
+  "nome": "Medidor do quadro de comando",
+  "grandezas": [
+    { "grandeza": "potencia", "unidade": "kW", "minimo": 0, "maximo": 30 },
+    { "grandeza": "tensao", "unidade": "V", "minimo": 180, "maximo": 250 },
+    { "grandeza": "energia", "unidade": "kW.h", "minimo": 0 }
+  ],
+  "intervaloEnvioS": 300
+}
+
+### --- Dispositivos ---
+
+### Lista (filtros: dominio, perfil, site, area, conexao, busca)
+GET {{host}}/dispositivos?dominio=iluminacao&site=centro&tamanho=10
+
+### Só os offline (pelo intervalo de cada perfil)
+GET {{host}}/dispositivos?conexao=offline
+
+### Detalhe pelo código
+GET {{host}}/dispositivos/p-001
+
+### Cadastrar um medidor (a resposta traz o token UMA vez)
+# @name cadastro
+POST {{host}}/dispositivos
+Content-Type: application/json
+
+{
+  "codigo": "medidor-centro",
+  "nome": "Medidor do quadro — Centro",
+  "dominio": "energia",
+  "perfil": "medidor-quadro",
+  "site": "centro",
+  "fabricante": "Medidores Genéricos",
+  "modelo": "MQ-3F",
+  "firmware": "1.0.0",
+  "latitude": -15.920801,
+  "longitude": -49.606172
+}
+
+### O dispositivo se identifica com o token
+GET {{host}}/dispositivos/eu
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+### Revogar a credencial (a próxima chamada acima passa a dar 401)
+DELETE {{host}}/dispositivos/medidor-centro/credenciais
+
+### Emitir uma credencial nova
+POST {{host}}/dispositivos/medidor-centro/credenciais
+
+### --- Ingestão (pipeline) ---
+# Use o token do "Cadastrar um medidor" acima (ou de POST /dispositivos/medidor-centro/credenciais).
+
+### Enviar uma mensagem (W é convertido para kW; tensão 260 V fica "suspeita")
+POST {{host}}/ingestao
+Content-Type: application/json
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+{
+  "versao": "1.0",
+  "id_mensagem": "{{$guid}}",
+  "dispositivo": "medidor-centro",
+  "tipo": "telemetria",
+  "timestamp": "{{$datetime iso8601}}",
+  "medidas": [
+    { "grandeza": "potencia", "valor": 12400, "unidade": "W" },
+    { "grandeza": "tensao", "valor": 260, "unidade": "V" }
+  ]
+}
+
+### Mensagem fora do esquema → 400 e fila de inválidas
+POST {{host}}/ingestao
+Content-Type: application/json
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+{ "versao": "1.0", "dispositivo": "medidor-centro", "tipo": "telemetria", "timestamp": "ontem" }
+
+### Lote (resultado por mensagem)
+POST {{host}}/ingestao/lote
+Content-Type: application/json
+Authorization: Bearer {{cadastro.response.body.credencial.token}}
+
+{
+  "mensagens": [
+    { "versao": "1.0", "id_mensagem": "{{$guid}}", "dispositivo": "medidor-centro", "tipo": "telemetria",
+      "timestamp": "{{$datetime iso8601 -48 h}}", "medidas": [ { "grandeza": "potencia", "valor": 9.8, "unidade": "kW" } ] },
+    { "versao": "2.0", "id_mensagem": "{{$guid}}", "dispositivo": "medidor-centro", "tipo": "telemetria",
+      "timestamp": "{{$datetime iso8601}}", "medidas": [] }
+  ]
+}
+
+### Fila de mensagens inválidas
+GET {{host}}/ingestao/invalidas
+
+### --- Séries ---
+
+### Último valor de cada grandeza
+GET {{host}}/dispositivos/medidor-centro/ultimos-valores
+
+### Histórico de um dispositivo (24 h, agregação automática)
+GET {{host}}/dispositivos/p-001/telemetria
+
+### Série por área e domínio, de hora em hora
+GET {{host}}/series?grandeza=potencia&area=avenida-goias&dominio=iluminacao&intervalo=1h
+
+### Série de um bairro nos últimos 30 dias, por dia
+GET {{host}}/series?grandeza=potencia&site=centro&intervalo=1d&inicio=2026-09-22T00:00:00Z
+
+### --- Regras e alarmes ---
+
+### Regra de limite com janela: tensão > 240 V por 60 s → alarme, e-mail, webhook e tópico
+POST {{host}}/regras
+Content-Type: application/json
+
+{
+  "nome": "Tensão alta no quadro",
+  "dominio": "energia",
+  "condicao": { "tipo": "limite", "grandeza": "tensao", "operador": ">", "valor": 240, "duracaoS": 60 },
+  "severidade": "CRITICO",
+  "acoes": [
+    { "tipo": "alarme" },
+    { "tipo": "notificar", "email": "operador@itaguari.local" },
+    { "tipo": "comando", "nome": "desligar_circuito" },
+    { "tipo": "publicar", "topico": "itaguari/alarmes/criticos" }
+  ]
+}
+
+### Regra de ausência de dados: luminária 2 min sem telemetria
+POST {{host}}/regras
+Content-Type: application/json
+
+{
+  "nome": "Luminária sem dados",
+  "dominio": "iluminacao",
+  "condicao": { "tipo": "ausencia", "duracaoS": 120 },
+  "severidade": "AVISO",
+  "acoes": [ { "tipo": "alarme" } ]
+}
+
+### Regras
+GET {{host}}/regras
+
+### Alarmes abertos, mais graves primeiro
+GET {{host}}/alarmes?status=ATIVO&ordenar=-severidade
+
+### Alarmes vindos da borda (diagnóstico do fog)
+GET {{host}}/alarmes?origem=borda
+
+### Reconhecer um alarme (troque o id)
+POST {{host}}/alarmes/COLE_O_ID/reconhecer
+Content-Type: application/json
+
+{ "por": "operador", "comentario": "Equipe a caminho" }
+
+### Resolver
+POST {{host}}/alarmes/COLE_O_ID/resolver
+Content-Type: application/json
+
+{ "por": "operador" }
+
+### Caixa de e-mail das notificações → abrir http://localhost:8025 no navegador
+

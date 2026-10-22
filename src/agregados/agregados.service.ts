@@ -10,6 +10,8 @@ import {
   PeriodoKpi,
 } from '../common/periodo';
 import { PrismaService } from '../prisma/prisma.service';
+import { janelaPagina, lerOrdenacao, montarPagina } from '../common/paginacao';
+import type { RankingQuery } from './dto/ranking.query';
 import { diasFechadosRecentes, diasSemAgregado } from './recuperacao';
 
 const MS_DIA = 24 * 60 * 60_000;
@@ -66,14 +68,22 @@ export class AgregadosService implements OnApplicationBootstrap {
     };
   }
 
-  /** GET /kpis/maior-consumo — ranking dos postes de maior consumo no período. */
-  async maiorConsumo(periodo: PeriodoKpi, limite: number) {
+  /** GET /kpis/maior-consumo — ranking paginado dos postes de maior consumo no período. */
+  async maiorConsumo(query: RankingQuery) {
+    const { periodo } = query;
+    const { direcao } = lerOrdenacao(
+      query.ordenar,
+      ['consumoKwh'],
+      '-consumoKwh',
+    );
     const { atual } = janelaKpi(periodo);
     const porPoste = await this.consumoPorPoste(atual);
 
-    const top = [...porPoste.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, limite);
+    const ordenados = [...porPoste.entries()].sort((a, b) =>
+      direcao === 'desc' ? b[1] - a[1] : a[1] - b[1],
+    );
+    const { skip, take } = janelaPagina(query);
+    const top = ordenados.slice(skip, skip + take);
 
     const postes = await this.prisma.poste.findMany({
       where: { id: { in: top.map(([id]) => id) } },
@@ -81,22 +91,24 @@ export class AgregadosService implements OnApplicationBootstrap {
     });
     const porId = new Map(postes.map((p) => [p.id, p]));
 
+    const itens = top.map(([id, kwh], i) => {
+      const poste = porId.get(id);
+      return {
+        posicao: skip + i + 1,
+        posteId: id,
+        codigo: poste?.codigo ?? null,
+        endereco: poste?.endereco ?? null,
+        bairro: poste?.bairro ?? null,
+        consumoKwh: arredondar(kwh, 2),
+        custoReais: arredondar(kwh * TARIFA_B4A_KWH, 2),
+      };
+    });
+
     return {
       periodo,
       inicio: atual.inicio,
       fim: atual.fim,
-      ranking: top.map(([id, kwh], i) => {
-        const poste = porId.get(id);
-        return {
-          posicao: i + 1,
-          posteId: id,
-          codigo: poste?.codigo ?? null,
-          endereco: poste?.endereco ?? null,
-          bairro: poste?.bairro ?? null,
-          consumoKwh: arredondar(kwh, 2),
-          custoReais: arredondar(kwh * TARIFA_B4A_KWH, 2),
-        };
-      }),
+      ...montarPagina(itens, ordenados.length, query),
     };
   }
 

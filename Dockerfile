@@ -35,6 +35,8 @@ COPY package.json bun.lock tsconfig.json ./
 COPY prisma ./prisma
 COPY src ./src
 COPY docker ./docker
+# Contrato canônico (JSON Schema e AsyncAPI): validação e publicação por URL.
+COPY contratos ./contratos
 
 RUN chmod +x docker/entrypoint.sh
 

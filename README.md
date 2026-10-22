@@ -33,8 +33,10 @@ bun run docker:logs        # acompanha o bootstrap e o simulador
 bun run docker:down        # derruba a stack (o volume do banco é preservado)
 ```
 
-API em `http://localhost:3000` (Swagger em `/docs`), WebSocket em
-`ws://localhost:3000/tempo-real`.
+API em `http://localhost:3000/api/v1` (Swagger em `/docs`), WebSocket em
+`ws://localhost:3000/tempo-real`. Caixa de e-mail das notificações (Mailpit) em
+`http://localhost:8025`. Métricas Prometheus em `http://localhost:3000/metrics` (API) e
+`http://localhost:9464/metrics` (fog); logs em JSON com `correlacao` (ver `API.md#observabilidade`).
 
 Variáveis do serviço `app` (todas opcionais, lidas do `.env` na raiz):
 
@@ -86,7 +88,7 @@ bun run db:backfill
 bun run start:dev      # http://localhost:3000 (watch mode)
 ```
 
-- **API REST:** `http://localhost:3000` — documentação interativa em `/docs`
+- **API REST:** `http://localhost:3000/api/v1` — documentação interativa em `/docs`
   (Swagger), OpenAPI JSON em `/docs-json`.
 - **WebSocket:** `ws://localhost:3000/tempo-real` (Socket.IO).
 - **Contrato completo com exemplos de payload:** [`docs/contrato-api.md`](./docs/contrato-api.md).
@@ -122,6 +124,7 @@ SIMULADOR_INTERVALO_TELEMETRIA_MS=3000 bun run start:dev
 | `bun run prisma:studio` | Prisma Studio (inspeção visual do banco) |
 | `bun run db:seed` | Popula a rede de 248 postes (idempotente) |
 | `bun run db:backfill` | Histórico: telemetria/eventos (`DIAS_RAW`) + agregados diários (`DIAS_AGREGADO`) |
+| `bun run db:catalogo` | Catálogo: inquilino, domínio `iluminacao`, perfil, bairros, ruas e um dispositivo por poste (idempotente; o container roda a cada subida) |
 | `bun run db:reset` | Recria o banco do zero e roda o seed |
 | `bun run build` / `bun run lint` | Compila para `dist/` · oxlint |
 | `bun run test` | Testes unitários (Jest) |
@@ -141,6 +144,62 @@ Entidades em `prisma/schema.prisma` (PRD seção 7):
 - **AgregadoConsumo** — consumo e custo agregados por período (`posteId` nulo = rede inteira).
 
 Enums: `StatusPoste`, `TipoEventoSensor`, `SentidoVeiculo`, `PeriodoAgregado`.
+
+**Catálogo da plataforma** (RF-CEN-01 a 03, RF-DIS-01, 02 e 06). Segue a hierarquia
+inquilino → local → área → dispositivo:
+
+- **Inquilino** — organização dona dos dados (`itaguari`, Prefeitura de Itaguari).
+- **Site** (local) e **Area** — bairros e ruas, com geometria GeoJSON.
+- **Dominio** — catálogo configurável (`iluminacao`; outros são criados pela API).
+- **PerfilDispositivo** — grandezas, unidades UCUM, faixa válida e intervalo
+  esperado de envio. Não pertence a um domínio, então é reutilizável entre projetos.
+- **Dispositivo** — perfil, domínio, local, área, fabricante, modelo e firmware.
+  Os 248 postes são dispositivos do domínio `iluminacao`, ligados pelo `posteId`.
+- **CredencialDispositivo** — um token por dispositivo. Só o hash fica guardado, e
+  a credencial pode ser revogada.
+
+**Pipeline de ingestão** (RF-ING-01 a 04, 06 e 08, RF-PRO-01, RF-DAD-01 e 02).
+Segue o padrão Pipes and Filters: receber → autenticar → validar → deduplicar →
+ordenar → enriquecer → publicar.
+
+- **Entradas:** `POST /api/v1/ingestao`, `POST /api/v1/ingestao/lote` (até 5.000) e
+  os tópicos canônicos no broker da nuvem, todas com o mesmo código
+  ([`src/pipeline/`](./src/pipeline/)).
+- **MensagemIngerida** — a mensagem aceita, enriquecida com o cadastro.
+  `id_mensagem` único garante que ela entra uma vez só.
+- **Medicao** — a série temporal, gravada pela hora da medição. A view
+  `serie_medicoes` junta a série com o histórico dos postes.
+- **UltimoValor** — o último valor de cada grandeza de cada dispositivo.
+- **MensagemInvalida** — a fila de inválidas, com a etapa e o motivo.
+
+**Regras e alarmes** (RF-PRO-02, 03 e 05), em [`src/regras/`](./src/regras/):
+
+- **Regra** — condição (limite com janela de tempo, ou ausência de dados), escopo
+  (domínio, local, área, perfil ou dispositivo) e ações: alarme, e-mail, comando,
+  webhook com novas tentativas e publicação em tópico.
+- **Motor** — avalia cada mensagem do pipeline na hora.
+- **Alarme** — ciclo de vida ATIVO → RECONHECIDO → RESOLVIDO, com severidade. Os
+  diagnósticos do fog também viram alarmes (origem `borda`), com a hora em que
+  aconteceram.
+- **ExecucaoAcao** — o resultado de cada ação.
+
+Os e-mails vão para o **Mailpit**, um servidor de e-mail de teste com a caixa em
+http://localhost:8025.
+
+**Nó de borda**: o fog guarda o que não conseguiu enviar numa fila em disco, cifrada
+(AES-256-GCM), que sobrevive a reinício e manda os alarmes primeiro. Ele também
+recebe dados locais em `POST :8081/ingestao` e sincroniza com a central em lotes
+(ver `API.md#nó-de-borda-fog`).
+
+**Kit do integrador** ([`docs/guia-integrador.md`](./docs/guia-integrador.md)):
+
+- exemplos em Python, JavaScript e Go ([`exemplos/`](./exemplos/));
+- adaptador plugável em contêiner ([`adaptadores/`](./adaptadores/));
+- script que cria o domínio "energia" só por configuração.
+
+O catálogo inicial é montado por [`prisma/catalogo.ts`](./prisma/catalogo.ts), que
+roda a cada subida do container sem apagar nada. Endpoints em
+[`API.md`](./API.md#catálogo).
 
 ## Seed
 
@@ -186,15 +245,21 @@ Intervalos e retenção são configuráveis por env (ver `.env.example`).
 
 ## API — Postes (Fase 3)
 
-Base URL: `http://localhost:3000`. Sem prefixo. CORS liberado. Validação estrita
-(query/body desconhecidos → 400; `:id` deve ser UUID → 400; poste inexistente → 404).
+Base URL: `http://localhost:3000/api/v1` (API versionada; só `GET /` fica fora do prefixo).
+CORS liberado. Validação estrita (query/body desconhecidos → 400; `:id` deve ser UUID → 400;
+poste inexistente → 404).
+
+**Listagens padronizadas** (RF-APP-07): toda listagem aceita `pagina` (padrão 1), `tamanho`
+(1–500, padrão 50) e `ordenar` (campo do endpoint, `-` na frente = decrescente) e responde
+`{ itens, pagina, tamanho, total, totalPaginas }`. O mapa pede `?tamanho=500` para trazer
+todos os postes. Ver [`src/common/paginacao.ts`](./src/common/paginacao.ts).
 
 | Método | Rota | Descrição |
 |---|---|---|
-| `GET` | `/postes?status=&busca=` | Lista para o mapa. `status` = `NORMAL`/`CONSUMO_ALTO`/`FALHA_OFFLINE`/`MANUTENCAO`; `busca` casa rua ou bairro (sem acento/caixa). Retorna `{ total, postes[] }`. |
+| `GET` | `/postes?status=&busca=` | Lista para o mapa. `status` = `NORMAL`/`CONSUMO_ALTO`/`FALHA_OFFLINE`/`MANUTENCAO`; `busca` casa rua ou bairro (sem acento/caixa). Paginado; `ordenar` por `codigo` (padrão), `bairro`, `status`, `consumoInstantaneoKw`… |
 | `GET` | `/postes/:id` | Detalhe do poste + `chamadoAberto` (true quando offline). |
 | `GET` | `/postes/:id/telemetria?periodo=hoje\|semana\|mes` | Histórico agregado: `resumo` (consumo/custo/média/pico/**economia %**) + `serie[]` para o gráfico de barras (por hora em `hoje`, por dia em `semana`/`mes`). Default `hoje`. |
-| `GET` | `/postes/:id/eventos?limite=` | Log do sensor 360°, mais recentes primeiro. `limite` 1–200 (default 50). |
+| `GET` | `/postes/:id/eventos?pagina=&tamanho=` | Log do sensor 360°, paginado; mais recentes primeiro (`ordenar=-timestamp`). |
 | `PATCH` | `/postes/:id/status` | Body `{ "status": "MANUTENCAO" \| "NORMAL" }`. Só esses dois — os demais são derivados da telemetria. |
 
 **Economia %** = consumo real frente a operar sempre em 100% pelas mesmas horas
@@ -208,7 +273,7 @@ sobrescrever a mudança manual no tick seguinte.
 | Método | Rota | Descrição |
 |---|---|---|
 | `GET` | `/kpis?periodo=dia\|semana\|mes\|ano` | Consumo (kWh) e custo (R$) da rede no período e no período anterior equivalente, `variacao` percentual, `parcialHoje` (dia corrente à parte) e `serie` comparativa (atual × anterior) para o gráfico — por hora (`dia`), dia (`semana`/`mes`) ou mês (`ano`). Default `mes`. |
-| `GET` | `/kpis/maior-consumo?periodo=&limite=` | Ranking dos postes de maior consumo no período, com endereço e kWh/custo. `limite` 1–20 (default 5). |
+| `GET` | `/kpis/maior-consumo?periodo=&pagina=&tamanho=` | Ranking paginado dos postes de maior consumo no período, com endereço e kWh/custo (padrão: top 5). |
 | `GET` | `/kpis/postes-por-status` | `{ total, porStatus[] }` — contagem por categoria (barra empilhada do PRD). |
 
 Custo = consumo × tarifa **B4a** (R$ 0,58/kWh), exposta em `tarifa` na resposta de `/kpis`.
@@ -283,30 +348,42 @@ docker compose up -d --force-recreate --no-deps app                      # volta
 docker compose up -d --force-recreate --no-deps edge fog                 # reprovisionam com os IDs novos
 ```
 
-**Tópicos** — padrão `organização/área/dispositivo/grandeza`
+**Contrato canônico v1.0** ([`contratos/`](./contratos/), publicado em `GET /contratos`):
+toda mensagem de dispositivo segue o JSON Schema
+[`contratos/v1/mensagem.schema.json`](./contratos/v1/mensagem.schema.json) — `versao`,
+`id_mensagem` (UUID), `dispositivo`, `tipo` (telemetria · evento · estado · comando),
+`timestamp` (UTC), `via`, `local` (site, área e ponto GeoJSON) e `medidas[]` com unidade
+UCUM — e os tópicos estão descritos em AsyncAPI 3
+([`contratos/v1/asyncapi.yaml`](./contratos/v1/asyncapi.yaml)). O fog valida cada mensagem
+do campo contra o schema e descarta (e conta) as que estão fora do contrato. Os nomes do
+domínio iluminação (grandezas `potencia` em kW e `luminosidade` em %, eventos e comandos)
+ficam em [`src/common/codec-iluminacao.ts`](./src/common/codec-iluminacao.ts), fora do núcleo.
+
+**Tópicos** — padrão `{inquilino}/{site}/{dominio}/{dispositivo}/{tipo}` do documento de requisitos
 ([`src/common/topicos-mqtt.ts`](./src/common/topicos-mqtt.ts)):
 
 | Tópico | Sentido | QoS | Quando |
 |---|---|---|---|
-| `itaguari/iluminacao/<bairro>/<poste>/telemetria` | edge → | 0 | a cada 10 s: `consumoKw`, `luminosidadePct` |
-| `itaguari/iluminacao/<bairro>/<poste>/evento` | edge → | 1 | na hora: `VEICULO_DETECTADO` / `RETORNO_AO_PISO` |
-| `itaguari/iluminacao/<bairro>/<poste>/saude` | edge → | 0 | a cada 30 s: `versaoFirmware`, `uptimeS`, `rssiDbm`, `memoriaLivreKb` |
-| `itaguari/iluminacao/<bairro>/<poste>/comando` | → edge | 1 | `{ "status": "MANUTENCAO" \| "NORMAL" }` |
-| `itaguari/iluminacao/_edge/estado` | edge → | 1 (retido) | presença do campo; *Last Will* publica `online: false` se ele cair |
+| `itaguari/<bairro>/iluminacao/<poste>/telemetria` | edge → | 0 | a cada 10 s: medidas `potencia` (kW) e `luminosidade` (%) |
+| `itaguari/<bairro>/iluminacao/<poste>/evento` | edge → | 1 | na hora: `VEICULO_DETECTADO` / `RETORNO_AO_PISO`; `ota_resultado` após uma atualização |
+| `itaguari/<bairro>/iluminacao/<poste>/estado` | edge → | 0 | a cada 30 s: `versaoFirmware`, `uptimeS`, `reinicios24h`, `rssiDbm`, `memoriaLivreKb` |
+| `itaguari/<bairro>/iluminacao/<poste>/comando` | → edge | 1 | `definir_status` (`MANUTENCAO` \| `NORMAL`) e `atualizar_firmware` (`versao`) |
+| `itaguari/_edge/estado` | edge → | 1 (retido) | presença do campo; *Last Will* publica `online: false` se ele cair |
 | `itaguari/nuvem/<bairro>/resumo` | fog → nuvem | 1 | a cada minuto: por poste, status, média de consumo/luminosidade, energia (kWh), versão de firmware |
 | `itaguari/nuvem/<bairro>/evento` | fog → nuvem | 1 | na hora: evento do sensor repassado com o bairro |
 | `itaguari/nuvem/<bairro>/alerta` | fog → nuvem | 1 | na hora: mudança de status diagnosticada (`statusAnterior`, `status`, `motivo`) |
 | `itaguari/nuvem/<bairro>/comando` | nuvem → fog | 1 | `{ "codigo": "P-042", "status": "MANUTENCAO" \| "NORMAL" }` — repassado ao poste |
 | `itaguari/nuvem/_fog/estado` | fog → nuvem | 1 (retido) | presença dos gateways (*Last Will*) e tamanho do buffer |
 | `itaguari/nuvem/_fog/trafego` | fog → nuvem | 1 (retido) | relatório de banda de cada janela (usado por `GET /arquitetura`) |
-| `itaguari/nuvem/<bairro>/ota` → `itaguari/iluminacao/<bairro>/<poste>/ota` | nuvem → fog → edge | 1 | ordem de atualização `{ "codigo", "versao" }` |
-| `itaguari/iluminacao/<bairro>/<poste>/ota-resultado` → `itaguari/nuvem/<bairro>/ota-resultado` | edge → fog → nuvem | 1 | resultado da instalação (sucesso ou rollback A/B) |
+| `itaguari/nuvem/<bairro>/ota` → `.../<poste>/comando` | nuvem → fog → edge | 1 | ordem de atualização `{ "codigo", "versao" }`, entregue ao poste como `atualizar_firmware` |
+| `.../<poste>/evento` → `itaguari/nuvem/<bairro>/ota-resultado` | edge → fog → nuvem | 1 | resultado da instalação (`ota_resultado`: sucesso ou rollback A/B) |
 
-O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`).
+O bairro vai sem acento e com hífen (`Jardim Primavera` → `jardim-primavera`); o domínio é
+um valor do catálogo (o primeiro é `iluminacao`).
 
 **Como o edge simula o campo** ([`src/edge/`](./src/edge/)):
 
-- **Provisionamento:** ao subir, pergunta à nuvem quais postes existem (`GET /postes`).
+- **Provisionamento:** ao subir, pergunta à nuvem quais postes existem (`GET /api/v1/postes`, página a página).
 - **Falhas físicas:** o edge não declara status. Um driver degradado passa a gastar
   mais, e um poste em falha simplesmente **para de publicar** — é a ausência de
   telemetria que caracteriza o offline, como num aparelho real.
@@ -332,7 +409,7 @@ Acompanhar o tráfego, enviar um comando e testar o buffer:
 
 ```bash
 docker compose logs -f edge fog
-docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/iluminacao/#' -v   # campo
+docker exec smartcity-mosquitto mosquitto_sub -t 'itaguari/+/iluminacao/#' -v  # campo
 docker exec smartcity-mosquitto-nuvem mosquitto_sub -t 'itaguari/nuvem/#' -v  # nuvem
 
 # comando do técnico: nuvem → fog → poste
@@ -340,9 +417,9 @@ docker exec smartcity-mosquitto-nuvem mosquitto_pub -q 1 \
   -t 'itaguari/nuvem/centro/comando' -m '{"codigo":"P-001","status":"MANUTENCAO"}'
 
 # manutenção pela API: grava no banco e o comando desce até o poste
-curl -X PATCH localhost:3000/postes/<id>/status -H 'Content-Type: application/json' \
+curl -X PATCH localhost:3000/api/v1/postes/<id>/status -H 'Content-Type: application/json' \
   -d '{"status":"MANUTENCAO"}'
-curl -s localhost:3000/arquitetura      # camadas, gateways, banda e alertas
+curl -s localhost:3000/api/v1/arquitetura      # camadas, gateways, banda e alertas
 
 # queda da nuvem: o fog guarda e reenvia ao voltar
 docker compose stop mosquitto-nuvem; sleep 30; docker compose start mosquitto-nuvem
@@ -384,10 +461,10 @@ quem terminou de instalar depois da decisão). Em aparelhos com proteção
 *anti-rollback*, isso seria publicar o código antigo com um número de versão maior.
 
 ```bash
-curl -s localhost:3000/ota                                     # catálogo, versões em campo, implantação
-curl -s -X POST localhost:3000/ota/implantacoes -H 'Content-Type: application/json' \
+curl -s localhost:3000/api/v1/ota                                     # catálogo, versões em campo, implantação
+curl -s -X POST localhost:3000/api/v1/ota/implantacoes -H 'Content-Type: application/json' \
   -d '{"versao":"3.0.0"}'                                      # o canário pega o defeito em ~2 min
-curl -s -X POST localhost:3000/ota/reverter                    # reversão manual
+curl -s -X POST localhost:3000/api/v1/ota/reverter                    # reversão manual
 docker compose logs -f app edge | grep -i ota
 ```
 

@@ -1,66 +1,18 @@
 import { SentidoVeiculo, StatusPoste, TipoEventoSensor } from '@prisma/client';
 
-/// Raiz dos tópicos da rede, no padrão organização/área/dispositivo/grandeza
-/// (ex.: itaguari/iluminacao/centro/P-042/telemetria).
-export const RAIZ_TOPICOS = 'itaguari/iluminacao';
+import { INQUILINO, slug } from './contrato';
 
-/// Grandezas publicadas por um poste (edge) ou enviadas a ele (comando, ota).
-export type GrandezaPoste =
-  'telemetria' | 'evento' | 'saude' | 'comando' | 'ota' | 'ota-resultado';
-
-/// Assina uma grandeza de todos os postes de todos os bairros.
-export const assinaturaTodosPostes = (grandeza: GrandezaPoste): string =>
-  `${RAIZ_TOPICOS}/+/+/${grandeza}`;
+/// Tópicos dos dispositivos (campo): ver `contrato.ts`, no padrão do documento
+/// de requisitos `{inquilino}/{site}/{dominio}/{dispositivo}/{tipo}`.
+/// Aqui ficam os tipos internos já decodificados e os tópicos fog → nuvem.
 
 /// Tópico de presença do simulador de campo (Last Will do MQTT).
-export const TOPICO_EDGE_ESTADO = `${RAIZ_TOPICOS}/_edge/estado`;
+export const TOPICO_EDGE_ESTADO = `${INQUILINO}/_edge/estado`;
 
-/** "Jardim Primavera" → "jardim-primavera" (tópicos não levam acento nem espaço). */
-export function slugBairro(bairro: string): string {
-  return bairro
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
+/** "Jardim Primavera" → "jardim-primavera". */
+export const slugBairro = slug;
 
-export function topicoPoste(
-  bairro: string,
-  codigo: string,
-  grandeza: GrandezaPoste,
-): string {
-  return `${RAIZ_TOPICOS}/${slugBairro(bairro)}/${codigo}/${grandeza}`;
-}
-
-export interface TopicoPosteParseado {
-  bairroSlug: string;
-  codigo: string;
-  grandeza: GrandezaPoste;
-}
-
-const GRANDEZAS: ReadonlySet<string> = new Set<GrandezaPoste>([
-  'telemetria',
-  'evento',
-  'saude',
-  'comando',
-  'ota',
-  'ota-resultado',
-]);
-
-/** Inverso de `topicoPoste`; null se o tópico não for de um poste. */
-export function parseTopicoPoste(topico: string): TopicoPosteParseado | null {
-  const prefixo = `${RAIZ_TOPICOS}/`;
-  if (!topico.startsWith(prefixo)) return null;
-  const partes = topico.slice(prefixo.length).split('/');
-  if (partes.length !== 3) return null;
-  const [bairroSlug, codigo, grandeza] = partes;
-  if (!bairroSlug || !codigo || !GRANDEZAS.has(grandeza)) return null;
-  return { bairroSlug, codigo, grandeza: grandeza as GrandezaPoste };
-}
-
-// --- Mensagens (payload JSON) ---------------------------------------------
+// --- Mensagens internas (já decodificadas da mensagem canônica) -------------
 // Datas trafegam como string ISO 8601.
 
 /// Leitura de consumo do poste, a cada intervalo de telemetria.
@@ -183,6 +135,8 @@ export interface MsgResumo {
 /// Evento do sensor repassado pelo fog na hora (o mapa continua ao vivo).
 export interface MsgEventoNuvem extends MsgEvento {
   bairro: string;
+  /// id_mensagem do evento canônico do poste (rastro edge → fog → nuvem).
+  correlacao?: string;
 }
 
 /// Mudança de status diagnosticada pelo fog (sobe na hora).
@@ -229,10 +183,10 @@ export interface MsgFogTrafego {
 }
 
 // --- OTA (atualização remota de firmware) ---------------------------------
-// nuvem → fog: itaguari/nuvem/<bairro>/ota          { codigo, versao }
-// fog → edge:  itaguari/iluminacao/<bairro>/<poste>/ota            { versao }
-// edge → fog:  itaguari/iluminacao/<bairro>/<poste>/ota-resultado  MsgOtaResultado
-// fog → nuvem: itaguari/nuvem/<bairro>/ota-resultado               MsgOtaResultado
+// nuvem → fog: itaguari/nuvem/<bairro>/ota                       { codigo, versao }
+// fog → edge:  itaguari/<bairro>/iluminacao/<poste>/comando      comando "atualizar_firmware"
+// edge → fog:  itaguari/<bairro>/iluminacao/<poste>/evento       evento "ota_resultado"
+// fog → nuvem: itaguari/nuvem/<bairro>/ota-resultado             MsgOtaResultado
 
 /// Ordem de atualização para um poste.
 export interface MsgOta {

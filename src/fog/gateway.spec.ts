@@ -111,7 +111,7 @@ describe('GatewayBairro', () => {
 
     const destino = g.aplicarComando('P-1', StatusPoste.MANUTENCAO, 0);
 
-    expect(destino).toBe('itaguari/iluminacao/vila-nova/P-1/comando');
+    expect(destino).toBe('itaguari/vila-nova/iluminacao/P-1/comando');
     expect(g.verificarOffline(120_000)).toEqual([]);
     expect(g.aplicarComando('P-404', StatusPoste.NORMAL)).toBeNull();
   });

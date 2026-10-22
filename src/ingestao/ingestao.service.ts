@@ -24,6 +24,8 @@ import {
 } from '../common/topicos-mqtt';
 import { EVENTO_POSTE_STATUS_ALTERADO } from '../postes/postes.events';
 import type { PosteStatusAlteradoEvent } from '../postes/postes.events';
+import { segundosDesde } from '../observabilidade/metricas';
+import { M } from '../observabilidade/metricas-plataforma';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   EVENTO_SIM_POSTES_ATUALIZADOS,
@@ -32,6 +34,7 @@ import {
 } from '../simulador/simulador.events';
 import { EstadoCamadasService } from './estado-camadas.service';
 import {
+  EVENTO_NUVEM_ALERTA,
   EVENTO_NUVEM_OTA_RESULTADO,
   EVENTO_NUVEM_RESUMO,
 } from './ingestao.events';
@@ -122,9 +125,10 @@ export class IngestaoService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Erro MQTT: ${erro.message}`),
     );
     this.cliente.on('message', (topico, payload) => {
-      void this.processar(topico, payload.toString()).catch((erro: Error) =>
-        this.logger.error(`Falha ao processar ${topico}: ${erro.message}`),
-      );
+      void this.processar(topico, payload.toString()).catch((erro: Error) => {
+        M.erros.inc({ modulo: 'nuvem', etapa: 'processar' });
+        this.logger.error(`Falha ao processar ${topico}: ${erro.message}`);
+      });
     });
 
     this.logger.log(
@@ -179,8 +183,18 @@ export class IngestaoService implements OnModuleInit, OnModuleDestroy {
   // --- Mensagens do fog ----------------------------------------------------
 
   private async processar(topico: string, payload: string): Promise<void> {
+    const inicio = performance.now();
     const msg = JSON.parse(payload) as unknown;
+    const grandeza = parseTopicoNuvem(topico)?.grandeza ?? 'estado-fog';
+    M.mensagens.inc({ modulo: 'nuvem', canal: 'mqtt', status: grandeza });
+    try {
+      await this.processarMensagem(topico, msg);
+    } finally {
+      M.latencia.observar(segundosDesde(inicio), { modulo: 'nuvem' });
+    }
+  }
 
+  private async processarMensagem(topico: string, msg: unknown): Promise<void> {
     if (topico === TOPICO_FOG_ESTADO) {
       this.estado.fog = msg as MsgFogEstado;
       return;
@@ -233,11 +247,19 @@ export class IngestaoService implements OnModuleInit, OnModuleDestroy {
     const [poste] = await this.atualizar([atualizacao]);
     if (!poste) return; // poste desconhecido
     await this.prisma.eventoSensor.create({ data: evento });
+    if (msg.correlacao) {
+      this.logger.debug({
+        msg: 'evento gravado',
+        correlacao: msg.correlacao,
+        poste: msg.codigo,
+      });
+    }
     this.emitir('sensores', [poste]);
   }
 
   private async aoAlerta(msg: MsgAlerta): Promise<void> {
     this.estado.registrarAlerta(msg);
+    this.eventEmitter.emit(EVENTO_NUVEM_ALERTA, msg);
     this.logger.log(
       `Alerta do fog (${msg.bairro}) · ${msg.codigo}: ${msg.statusAnterior} → ${msg.status} — ${msg.motivo}`,
     );

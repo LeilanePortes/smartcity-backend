@@ -28,7 +28,7 @@ export class KpisController {
   @ApiOperation({ summary: 'Ranking dos postes de maior consumo no período' })
   @ApiOkResponse({ description: '`{ periodo, inicio, fim, ranking[] }`.' })
   maiorConsumo(@Query() query: RankingQuery) {
-    return this.agregados.maiorConsumo(query.periodo, query.limite);
+    return this.agregados.maiorConsumo(query);
   }
 
   @Get('postes-por-status')

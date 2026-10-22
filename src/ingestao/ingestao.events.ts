@@ -5,3 +5,7 @@ export const EVENTO_NUVEM_RESUMO = 'nuvem.resumo';
 
 /// Resultado de uma instalação OTA informado por um poste. Payload: `MsgOtaResultado`.
 export const EVENTO_NUVEM_OTA_RESULTADO = 'nuvem.ota.resultado';
+
+/// Diagnóstico do fog (FALHA_OFFLINE, CONSUMO_ALTO, volta ao normal), com a hora
+/// em que aconteceu na borda. Payload: `MsgAlerta`.
+export const EVENTO_NUVEM_ALERTA = 'nuvem.alerta';

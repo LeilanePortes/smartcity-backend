@@ -13,6 +13,11 @@ import { SimuladorModule } from './simulador/simulador.module';
 import { TempoRealModule } from './tempo-real/tempo-real.module';
 import { IngestaoModule } from './ingestao/ingestao.module';
 import { OtaModule } from './ota/ota.module';
+import { ContratosModule } from './contratos/contratos.module';
+import { CatalogoModule } from './catalogo/catalogo.module';
+import { PipelineModule } from './pipeline/pipeline.module';
+import { RegrasModule } from './regras/regras.module';
+import { MetricasController } from './observabilidade/metricas.controller';
 
 @Module({
   imports: [
@@ -28,8 +33,12 @@ import { OtaModule } from './ota/ota.module';
     TempoRealModule,
     IngestaoModule,
     OtaModule,
+    ContratosModule,
+    CatalogoModule,
+    PipelineModule,
+    RegrasModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, MetricasController],
   providers: [AppService],
 })
 export class AppModule {}

@@ -78,7 +78,7 @@ export class PostesController {
     @Query() query: ListarEventosQuery,
   ) {
     await this.postes.garantirExiste(id);
-    return this.eventos.listarPorPoste(id, query.limite);
+    return this.eventos.listarPorPoste(id, query);
   }
 
   @Patch(':id/status')
