@@ -186,6 +186,11 @@ ordenar → enriquecer → publicar.
 Os e-mails vão para o **Mailpit**, um servidor de e-mail de teste com a caixa em
 http://localhost:8025.
 
+**Nó de borda**: o fog guarda o que não conseguiu enviar numa fila em disco, cifrada
+(AES-256-GCM), que sobrevive a reinício e manda os alarmes primeiro. Ele também
+recebe dados locais em `POST :8081/ingestao` e sincroniza com a central em lotes
+(ver `API.md#nó-de-borda-fog`).
+
 **Kit do integrador** ([`docs/guia-integrador.md`](./docs/guia-integrador.md)):
 
 - exemplos em Python, JavaScript e Go ([`exemplos/`](./exemplos/));
