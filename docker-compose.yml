@@ -192,5 +192,23 @@ services:
       FOG_METRICAS_PORTA: 9464
       LOG_NIVEL: ${LOG_NIVEL:-info}
 
+  # Adaptador plugável (RF-INT-03): medidor legado → contrato canônico. Fica
+  # num perfil próprio e sobe com a plataforma no ar, sem recompilar nem
+  # reiniciar o núcleo:  docker compose --profile adaptadores up -d adaptador-medidor-legado
+  adaptador-medidor-legado:
+    image: python:3.12-alpine
+    container_name: smartcity-adaptador-medidor-legado
+    profiles: ['adaptadores']
+    restart: unless-stopped
+    command: ['python', '-u', '/adaptador/adaptador.py']
+    volumes:
+      - ./adaptadores/medidor-legado:/adaptador:ro
+    environment:
+      API_URL: http://app:3000
+      # {"<id do medidor legado>": {"dispositivo": "<código>", "token": "<token>"}}
+      ADAPTADOR_MAPA: ${ADAPTADOR_MAPA:-{}}
+    ports:
+      - '8090:8090'
+
 volumes:
   smartcity-pgdata:
