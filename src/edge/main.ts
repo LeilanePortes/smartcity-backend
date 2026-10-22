@@ -1,3 +1,4 @@
+import { rastroAtivo, registrar } from '../observabilidade/log';
 import { connect, MqttClient } from 'mqtt';
 import {
   assinaturaDominio,
@@ -19,7 +20,7 @@ import { EdgeConfig, lerEdgeConfig } from './edge.config';
  * sempre com a mensagem canônica do contrato v1.0.
  */
 
-const log = (msg: string): void => console.log(`[edge] ${msg}`);
+const log = (msg: string): void => registrar('info', 'edge', msg);
 
 type Grandeza = 'telemetria' | 'evento' | 'saude' | 'ota';
 
@@ -115,6 +116,17 @@ function iniciar(config: EdgeConfig, campo: CampoEdge): void {
     }
     for (const p of lote) {
       cliente.publish(p.topico, p.payload, { qos: p.qos });
+      // Rastro (LOG_NIVEL=debug): o id_mensagem acompanha a mensagem até a nuvem.
+      if (rastroAtivo() && p.topico.endsWith('/evento')) {
+        const { id_mensagem, dispositivo } = JSON.parse(p.payload) as Record<
+          string,
+          string
+        >;
+        registrar('debug', 'edge', 'evento publicado', {
+          correlacao: id_mensagem,
+          dispositivo,
+        });
+      }
       contador.registrar(grandeza, p.payload.length);
     }
   };

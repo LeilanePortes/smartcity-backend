@@ -1,3 +1,6 @@
+import { createServer } from 'node:http';
+import { rastroAtivo, registrar } from '../observabilidade/log';
+import { RegistroMetricas } from '../observabilidade/metricas';
 import { StatusPoste } from '@prisma/client';
 import { connect, MqttClient } from 'mqtt';
 import { provisionar } from '../common/provisionamento';
@@ -43,7 +46,43 @@ import { GatewayBairro } from './gateway';
  * enviado em ordem quando a conexão volta (store-and-forward).
  */
 
-const log = (msg: string): void => console.log(`[fog] ${msg}`);
+const log = (msg: string, campos?: Record<string, unknown>): void =>
+  registrar('info', 'fog', msg, campos);
+
+/// Métricas do nó de borda (RF-OBS-01), em GET :FOG_METRICAS_PORTA/metrics.
+const metricasFog = new RegistroMetricas();
+const MF = {
+  mensagens: metricasFog.contador(
+    'fog_mensagens_total',
+    'Mensagens do fog por direção: entrada (campo), saida (nuvem), invalida (fora do contrato).',
+  ),
+  bytes: metricasFog.contador('fog_bytes_total', 'Bytes do fog por direção.'),
+  alertas: metricasFog.contador(
+    'fog_alertas_total',
+    'Diagnósticos enviados à nuvem, por status novo.',
+  ),
+  buffer: metricasFog.medidor(
+    'fog_buffer_mensagens',
+    'Mensagens guardadas esperando a nuvem.',
+  ),
+  online: metricasFog.medidor(
+    'fog_postes_online',
+    'Postes que reportaram na última janela.',
+  ),
+};
+
+function servirMetricas(porta: number): void {
+  createServer((req, res) => {
+    if (req.url !== '/metrics') {
+      res.writeHead(404).end();
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+    });
+    res.end(metricasFog.texto());
+  }).listen(porta, () => log(`métricas em :${porta}/metrics`));
+}
 
 /// Identificação do gateway no campo `via` das mensagens que ele emite.
 const viaFog = (bairro: string): string => `fog-${slugBairro(bairro)}`;
@@ -164,6 +203,7 @@ function iniciar(
   gateways: Map<string, GatewayBairro>,
 ): void {
   const trafego = new Trafego();
+  servirMetricas(config.metricasPorta);
   const totalPostes = [...gateways.values()].reduce((n, g) => n + g.total, 0);
 
   // --- Uplink (broker da nuvem) ----------------------------------------
@@ -221,6 +261,7 @@ function iniciar(
 
   const enviarAlertas = (alertas: MsgAlerta[]): void => {
     for (const a of alertas) {
+      MF.alertas.inc({ status: a.status });
       log(
         `alerta ${a.bairro} · ${a.codigo}: ${a.statusAnterior} → ${a.status} (${a.motivo})`,
       );
@@ -283,8 +324,15 @@ function iniciar(
       if (evento) {
         uplink.enviar({
           topico: topicoNuvem(gateway.bairro, 'evento'),
-          payload: JSON.stringify(evento),
+          payload: JSON.stringify({ ...evento, correlacao: m.id_mensagem }),
         });
+        if (rastroAtivo()) {
+          registrar('debug', 'fog', 'evento repassado à nuvem', {
+            correlacao: m.id_mensagem,
+            dispositivo: m.dispositivo,
+            bairro: gateway.bairro,
+          });
+        }
       }
     }
   });
@@ -371,7 +419,14 @@ function iniciar(
         payload: JSON.stringify(resumo),
       });
     }
+    MF.mensagens.inc({ direcao: 'invalida' }, trafego.invalidas);
     const { numeros, texto } = trafego.fecharJanela(uplink.pendentes);
+    MF.mensagens.inc({ direcao: 'entrada' }, numeros.entrada.msgs);
+    MF.mensagens.inc({ direcao: 'saida' }, numeros.saida.msgs);
+    MF.bytes.inc({ direcao: 'entrada' }, numeros.entrada.bytes);
+    MF.bytes.inc({ direcao: 'saida' }, numeros.saida.bytes);
+    MF.buffer.set(uplink.pendentes);
+    MF.online.set(online);
     log(
       `janela ${config.janelaResumoMs / 1000}s · ${online}/${totalPostes} postes no ar · ${texto}`,
     );

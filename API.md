@@ -66,6 +66,7 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [`GET /alarmes`](#get-alarmes)
   - [`GET /alarmes/:id`](#get-alarmesid)
   - [Reconhecer e resolver](#post-alarmesidreconhecer--post-alarmesidresolver)
+- [Observabilidade (`/metrics` e logs)](#observabilidade)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
 - [Notas do mock](#notas-do-mock)
@@ -1388,6 +1389,44 @@ tentativas, erro, criadoEm, concluidoEm }`).
 - **`resolver`:** funciona num alarme `ATIVO` ou `RECONHECIDO`.
 - **Respostas:** `200` com o alarme · `409` se a transição não for permitida ·
   `404` se o alarme não existir.
+
+---
+
+## Observabilidade
+
+### `GET /metrics` (API) · `GET http://localhost:9464/metrics` (fog)
+
+Métricas no formato texto do Prometheus (RF-OBS-01). A rota fica fora do `/api/v1`.
+
+| Métrica | Rótulos | O que mede |
+|---|---|---|
+| `plataforma_mensagens_total` | `modulo` (`pipeline`, `nuvem`), `canal`, `status` | Mensagens processadas. Mensagens por segundo = `rate(plataforma_mensagens_total[1m])` |
+| `plataforma_latencia_segundos` (histograma) | `modulo` | Tempo do recebimento até a persistência |
+| `plataforma_erros_total` | `modulo`, `etapa` | Erros, incluindo as mensagens recusadas pelo pipeline |
+| `plataforma_alarmes_total` / `plataforma_acoes_total` | `origem`, `severidade` / `tipo`, `status` | Alarmes abertos e ações das regras |
+| `http_requisicoes_total` / `http_latencia_segundos` | `metodo`, `rota`, `status` / `rota` | API REST |
+| `fog_mensagens_total` / `fog_bytes_total` | `direcao` (`entrada`, `saida`, `invalida`) | Tráfego do nó de borda |
+| `fog_buffer_mensagens` / `fog_postes_online` | — | Mensagens guardadas esperando a nuvem / postes no ar |
+
+### Logs e correlação
+
+Logs estruturados com identificador de correlação (RF-OBS-02).
+
+- **Formato:** API, fog e edge escrevem **uma linha JSON por evento**:
+  `{ ts, nivel, modulo, msg, correlacao?, ... }`. Com `LOG_FORMATO=texto`, voltam
+  ao formato legível.
+- **Correlação:** a `correlacao` é o `id_mensagem` da mensagem canônica.
+  - Com `LOG_NIVEL=debug`, a mesma mensagem aparece no edge (`evento publicado`),
+    no fog (`evento repassado à nuvem`) e na API (`evento gravado`, `mensagem
+    aceita`, `Regra … disparou`).
+  - O alarme e o corpo do webhook também levam a `correlacao`.
+- **HTTP:** toda resposta traz o cabeçalho `X-Correlation-Id`, que repete o
+  recebido ou gera um novo. Requisições com erro vão para o log com ele.
+
+```bash
+LOG_NIVEL=debug docker compose up -d app edge fog
+docker compose logs edge fog app | grep <id_mensagem>
+```
 
 ---
 

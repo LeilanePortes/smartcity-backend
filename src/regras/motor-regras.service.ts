@@ -7,6 +7,7 @@ import { EVENTO_NUVEM_ALERTA } from '../ingestao/ingestao.events';
 import { IngestaoMqttService } from '../pipeline/ingestao-mqtt.service';
 import { EVENTO_PIPELINE_MENSAGEM } from '../pipeline/pipeline.service';
 import type { MensagemPublicada } from '../pipeline/pipeline.service';
+import { M } from '../observabilidade/metricas-plataforma';
 import { PrismaService } from '../prisma/prisma.service';
 import { Acao, Disparo, executarAcao, Portas } from './acoes';
 import { AlarmesService } from './alarmes.service';
@@ -143,6 +144,7 @@ export class MotorRegrasService {
               grandeza: c.grandeza,
               valor: medida.valor,
               ocorridoEm: new Date(em),
+              correlacao: p.mensagem.id_mensagem as string,
             },
             alvo.inquilinoId,
           );
@@ -305,7 +307,11 @@ export class MotorRegrasService {
           ocorridoEm: x.ocorridoEm,
         }),
     };
-    this.logger.log(`Regra "${r.nome}" disparou para ${d.dispositivo.codigo}`);
+    this.logger.log({
+      msg: `Regra "${r.nome}" disparou para ${d.dispositivo.codigo}`,
+      correlacao: d.correlacao,
+      regra: r.id,
+    });
     for (const acao of acoes) {
       const inicio = new Date();
       const res = await executarAcao(acao, d, portas);
@@ -322,6 +328,7 @@ export class MotorRegrasService {
           concluidoEm: new Date(),
         },
       });
+      M.acoes.inc({ tipo: res.tipo, status: res.status });
       if (res.status === 'falha') {
         this.logger.warn(
           `Ação ${res.tipo} da regra "${r.nome}" falhou: ${res.erro}`,

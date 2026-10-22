@@ -40,6 +40,10 @@ services:
       SIMULADOR_MODO: ${SIMULADOR_MODO:-camadas}
       MQTT_NUVEM_URL: mqtt://mosquitto-nuvem:1883
       # E-mail das notificações das regras: Mailpit (caixa em http://localhost:8025).
+      # Logs em JSON (LOG_FORMATO=texto volta ao legível); LOG_NIVEL=debug mostra o
+      # rastro de cada mensagem pelo id_mensagem (edge → fog → nuvem).
+      LOG_FORMATO: ${LOG_FORMATO:-json}
+      LOG_NIVEL: ${LOG_NIVEL:-info}
       SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}
       ALARMES_EMAIL_DE: ${ALARMES_EMAIL_DE:-alarmes@itaguari.local}
       # OTA com grupo canário: ondas (% acumulado), janela de observação por onda
@@ -123,6 +127,7 @@ services:
       MQTT_URL: mqtt://mosquitto:1883
       # Provisionamento: o campo pergunta à nuvem quais postes existem.
       EDGE_API_URL: http://app:3000
+      LOG_NIVEL: ${LOG_NIVEL:-info}
       EDGE_VERSAO_FIRMWARE: ${EDGE_VERSAO_FIRMWARE:-2.4.1}
       EDGE_INTERVALO_SENSORES_MS: ${EDGE_INTERVALO_SENSORES_MS:-5000}
       EDGE_INTERVALO_TELEMETRIA_MS: ${EDGE_INTERVALO_TELEMETRIA_MS:-10000}
@@ -174,6 +179,8 @@ services:
     # guarda as mensagens até o uplink voltar.
     entrypoint: []
     command: ['bun', 'run', 'dist/fog/main.js']
+    ports:
+      - '9464:9464' # GET /metrics do nó de borda
     environment:
       MQTT_URL: mqtt://mosquitto:1883
       MQTT_NUVEM_URL: mqtt://mosquitto-nuvem:1883
@@ -182,6 +189,8 @@ services:
       FOG_LIMIAR_RETORNO_NORMAL: ${FOG_LIMIAR_RETORNO_NORMAL:-1.3}
       FOG_TIMEOUT_OFFLINE_MS: ${FOG_TIMEOUT_OFFLINE_MS:-30000}
       FOG_JANELA_RESUMO_MS: ${FOG_JANELA_RESUMO_MS:-60000}
+      FOG_METRICAS_PORTA: 9464
+      LOG_NIVEL: ${LOG_NIVEL:-info}
 
 volumes:
   smartcity-pgdata:

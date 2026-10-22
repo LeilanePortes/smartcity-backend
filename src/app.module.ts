@@ -17,6 +17,7 @@ import { ContratosModule } from './contratos/contratos.module';
 import { CatalogoModule } from './catalogo/catalogo.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { RegrasModule } from './regras/regras.module';
+import { MetricasController } from './observabilidade/metricas.controller';
 
 @Module({
   imports: [
@@ -37,7 +38,7 @@ import { RegrasModule } from './regras/regras.module';
     PipelineModule,
     RegrasModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, MetricasController],
   providers: [AppService],
 })
 export class AppModule {}

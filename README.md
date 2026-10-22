@@ -35,7 +35,8 @@ bun run docker:down        # derruba a stack (o volume do banco é preservado)
 
 API em `http://localhost:3000/api/v1` (Swagger em `/docs`), WebSocket em
 `ws://localhost:3000/tempo-real`. Caixa de e-mail das notificações (Mailpit) em
-`http://localhost:8025`.
+`http://localhost:8025`. Métricas Prometheus em `http://localhost:3000/metrics` (API) e
+`http://localhost:9464/metrics` (fog); logs em JSON com `correlacao` (ver `API.md#observabilidade`).
 
 Variáveis do serviço `app` (todas opcionais, lidas do `.env` na raiz):
 

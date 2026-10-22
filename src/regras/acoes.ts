@@ -37,6 +37,8 @@ export interface Disparo {
   valor?: number;
   ocorridoEm: Date;
   alarmeId?: string;
+  /// id_mensagem que disparou a regra (rastro até o alarme e as ações).
+  correlacao?: string;
 }
 
 export interface Portas {
@@ -120,6 +122,7 @@ export function resumoDisparo(d: Disparo) {
     grandeza: d.grandeza ?? null,
     valor: d.valor ?? null,
     ocorridoEm: d.ocorridoEm.toISOString(),
+    correlacao: d.correlacao ?? null,
   };
 }
 
