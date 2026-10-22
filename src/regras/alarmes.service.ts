@@ -7,6 +7,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, SeveridadeAlarme, StatusAlarme } from '@prisma/client';
 import { CatalogoService, porRef } from '../catalogo/catalogo.service';
 import { janelaPagina, lerOrdenacao, montarPagina } from '../common/paginacao';
+import { M } from '../observabilidade/metricas-plataforma';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   ListarAlarmesQuery,
@@ -64,6 +65,7 @@ export class AlarmesService {
     });
     if (aberto) return { id: aberto.id, novo: false };
     const a = await this.prisma.alarme.create({ data: n, include: INCLUIR });
+    M.alarmes.inc({ origem: n.origem, severidade: n.severidade });
     this.avisar(a);
     return { id: a.id, novo: true };
   }

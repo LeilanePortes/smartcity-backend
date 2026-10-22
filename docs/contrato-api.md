@@ -482,6 +482,14 @@ publicar. Detalhes de cada campo no `API.md`.
 
 ---
 
+## Observabilidade
+
+`GET /metrics` (fora do `/api/v1`) e `http://localhost:9464/metrics` (fog) no formato Prometheus.
+Logs em JSON com `correlacao` = `id_mensagem` (`LOG_NIVEL=debug` mostra o rastro edge → fog → nuvem).
+Toda resposta HTTP traz `X-Correlation-Id`. Detalhes no `API.md`.
+
+---
+
 ## WebSocket — `ws://localhost:3000/tempo-real`
 
 Socket.IO, namespace `/tempo-real`. Sem autenticação. As atualizações ao vivo

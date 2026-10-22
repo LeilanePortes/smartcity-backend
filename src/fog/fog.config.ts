@@ -16,6 +16,8 @@ export interface FogConfig {
   intervaloVerificacaoMs: number;
   /// Tamanho da janela de agregação (um resumo por bairro por janela).
   janelaResumoMs: number;
+  /// Porta do GET /metrics (Prometheus).
+  metricasPorta: number;
   /// Máximo de mensagens guardadas enquanto a nuvem está fora (descarta as mais antigas).
   bufferMax: number;
 }
@@ -35,6 +37,7 @@ export function lerFogConfig(env: NodeJS.ProcessEnv = process.env): FogConfig {
     timeoutOfflineMs: numero(env.FOG_TIMEOUT_OFFLINE_MS, 30_000),
     intervaloVerificacaoMs: numero(env.FOG_INTERVALO_VERIFICACAO_MS, 5_000),
     janelaResumoMs: numero(env.FOG_JANELA_RESUMO_MS, 60_000),
+    metricasPorta: numero(env.FOG_METRICAS_PORTA, 9464),
     bufferMax: numero(env.FOG_BUFFER_MAX, 5_000),
   };
 }

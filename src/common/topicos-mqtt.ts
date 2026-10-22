@@ -135,6 +135,8 @@ export interface MsgResumo {
 /// Evento do sensor repassado pelo fog na hora (o mapa continua ao vivo).
 export interface MsgEventoNuvem extends MsgEvento {
   bairro: string;
+  /// id_mensagem do evento canônico do poste (rastro edge → fog → nuvem).
+  correlacao?: string;
 }
 
 /// Mudança de status diagnosticada pelo fog (sobe na hora).

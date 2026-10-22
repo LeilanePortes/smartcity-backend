@@ -4,6 +4,9 @@ import { Prisma } from '@prisma/client';
 import type { MensagemCanonica, TopicoDispositivo } from '../common/contrato';
 import { avaliarMedidas } from '../catalogo/grandezas';
 import type { GrandezaPerfil, MedidaAvaliada } from '../catalogo/grandezas';
+import { rastroAtivo } from '../observabilidade/log';
+import { segundosDesde } from '../observabilidade/metricas';
+import { M } from '../observabilidade/metricas-plataforma';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   Canal,
@@ -102,6 +105,7 @@ export class PipelineService {
     payloads: readonly unknown[],
     origem: Origem,
   ): Promise<ResultadoMensagem[]> {
+    const inicio = performance.now();
     const agora = new Date();
     const resultados: ResultadoMensagem[] = [];
     const recusadas: { indice: number; payload: unknown; recusa: Recusa }[] =
@@ -183,7 +187,36 @@ export class PipelineService {
         erros: r.recusa.erros,
       });
     }
-    return resultados.sort((a, b) => a.indice - b.indice);
+    resultados.sort((a, b) => a.indice - b.indice);
+    this.medir(resultados, origem, inicio);
+    return resultados;
+  }
+
+  /** Métricas (RF-OBS-01) e o rastro de cada mensagem pelo id_mensagem (RF-OBS-02). */
+  private medir(
+    resultados: ResultadoMensagem[],
+    origem: Origem,
+    inicio: number,
+  ) {
+    M.latencia.observar(segundosDesde(inicio), { modulo: 'pipeline' });
+    for (const r of resultados) {
+      M.mensagens.inc({
+        modulo: 'pipeline',
+        canal: origem.canal,
+        status: r.status,
+      });
+      if (r.status === 'recusada')
+        M.erros.inc({ modulo: 'pipeline', etapa: r.etapa ?? '?' });
+      if (rastroAtivo() || r.status === 'recusada') {
+        this.logger[r.status === 'recusada' ? 'warn' : 'debug']({
+          msg: `mensagem ${r.status}`,
+          correlacao: r.id_mensagem,
+          canal: origem.canal,
+          via: origem.topicoTexto,
+          ...(r.motivo ? { etapa: r.etapa, motivo: r.motivo } : {}),
+        });
+      }
+    }
   }
 
   private async carregarCadastros(codigos: string[], inquilino: string) {
@@ -353,9 +386,6 @@ export class PipelineService {
         payload: comoJson(payload),
       })),
     });
-    this.logger.warn(
-      `${recusadas.length} mensagem(ns) recusada(s) via ${origem.canal}: ${recusadas[0].recusa.motivo}`,
-    );
   }
 }
 

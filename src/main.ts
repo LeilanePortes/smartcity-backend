@@ -4,9 +4,17 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { PREFIXO_API } from './common/constants';
+import { correlacaoEMetricasHttp } from './observabilidade/http';
+import { LoggerJson } from './observabilidade/log';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+  });
+  // Logs em JSON com correlação (RF-OBS-02); LOG_FORMATO=texto para o formato antigo.
+  if ((process.env.LOG_FORMATO ?? 'json') === 'json')
+    app.useLogger(new LoggerJson());
+  app.use(correlacaoEMetricasHttp);
   // Lotes de até 5.000 mensagens (RF-ING-03) passam do limite padrão de 100 kB.
   app.useBodyParser('json', { limit: '10mb' });
 
@@ -14,7 +22,10 @@ async function bootstrap() {
   // API REST versionada (RF-APP-01): tudo sob /api/v1. A raiz fica de fora
   // porque serve de ponteiro para a documentação e de verificação de saúde.
   app.setGlobalPrefix(PREFIXO_API, {
-    exclude: [{ path: '/', method: RequestMethod.GET }],
+    exclude: [
+      { path: '/', method: RequestMethod.GET },
+      { path: 'metrics', method: RequestMethod.GET },
+    ],
   });
   app.useGlobalPipes(
     new ValidationPipe({
