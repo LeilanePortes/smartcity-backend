@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { PosteAtual } from '../simulador/simulador.engine';
 import { PREFIXO_API } from './constants';
 import type { Pagina } from './paginacao';
@@ -20,9 +22,14 @@ const esperar = (ms: number): Promise<void> =>
  * existem (`GET /api/v1/postes`, paginado). Repete até a API responder (no compose, ela pode ainda estar
  * populando o banco).
  */
+/**
+ * Lista de postes da nuvem. Com `cache`, a última lista boa fica num arquivo e
+ * é usada quando a API não responde — o nó de borda sobe mesmo sem a central.
+ */
 export async function provisionar(
   apiUrl: string,
   log: (msg: string) => void,
+  cache?: string,
 ): Promise<PosteProvisionado[]> {
   for (let tentativa = 1; ; tentativa++) {
     try {
@@ -41,11 +48,20 @@ export async function provisionar(
         postes.push(...corpo.itens);
         if (pagina >= corpo.totalPaginas) break;
       }
-      return postes.map((p) => ({
-        ...p,
-        ultimaLeituraEm: p.ultimaLeituraEm ? new Date(p.ultimaLeituraEm) : null,
-      }));
+      if (cache) {
+        mkdirSync(dirname(cache), { recursive: true });
+        writeFileSync(cache, JSON.stringify(postes));
+      }
+      return converter(postes);
     } catch (erro) {
+      if (cache && existsSync(cache)) {
+        log(
+          `provisionamento: API indisponível; usando a lista guardada em ${cache}`,
+        );
+        return converter(
+          JSON.parse(readFileSync(cache, 'utf8')) as PosteJson[],
+        );
+      }
       log(
         `provisionamento: API indisponível em ${apiUrl} (${(erro as Error).message}), ` +
           `nova tentativa em 5 s [${tentativa}]`,
@@ -54,3 +70,13 @@ export async function provisionar(
     }
   }
 }
+
+type PosteJson = Omit<PosteProvisionado, 'ultimaLeituraEm'> & {
+  ultimaLeituraEm: string | null;
+};
+
+const converter = (postes: PosteJson[]): PosteProvisionado[] =>
+  postes.map((p) => ({
+    ...p,
+    ultimaLeituraEm: p.ultimaLeituraEm ? new Date(p.ultimaLeituraEm) : null,
+  }));

@@ -1,4 +1,8 @@
 import { createServer } from 'node:http';
+import { join } from 'node:path';
+import { derivarChave, FilaPersistente } from './fila-persistente';
+import { IngestaoLocal } from './ingestao-local';
+import type { MensagemLocal } from './ingestao-local';
 import { rastroAtivo, registrar } from '../observabilidade/log';
 import { RegistroMetricas } from '../observabilidade/metricas';
 import { StatusPoste } from '@prisma/client';
@@ -69,6 +73,10 @@ const MF = {
     'fog_postes_online',
     'Postes que reportaram na última janela.',
   ),
+  filaLocal: metricasFog.medidor(
+    'fog_fila_ingestao_pendentes',
+    'Mensagens da ingestão local esperando sincronizar com a central.',
+  ),
 };
 
 function servirMetricas(porta: number): void {
@@ -131,19 +139,29 @@ class Trafego {
   }
 }
 
-/// Uplink com buffer: publica se a nuvem está no ar, senão guarda.
+/// Prioridade no buffer: alarmes e resultados de OTA antes de eventos, e
+/// eventos antes dos resumos de telemetria (RF-EDG-05).
+const prioridadeDo = (topico: string): number =>
+  /\/(alerta|ota-resultado)$/.test(topico)
+    ? 0
+    : topico.endsWith('/evento')
+      ? 1
+      : 2;
+
+/// Uplink com buffer persistente e cifrado: publica se a nuvem está no ar,
+/// senão guarda no disco (sobrevive a reinício do fog) até a nuvem voltar.
 class Uplink {
-  private readonly fila: Publicacao[] = [];
-  private descartadas = 0;
+  private confirmados: string[] = [];
+  private timerConfirmacao: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly cliente: MqttClient,
-    private readonly max: number,
+    private readonly fila: FilaPersistente<Publicacao>,
     private readonly trafego: Trafego,
   ) {}
 
   get pendentes(): number {
-    return this.fila.length;
+    return this.fila.pendentes;
   }
 
   enviar(p: Publicacao): void {
@@ -151,31 +169,43 @@ class Uplink {
       this.publicar(p);
       return;
     }
-    this.fila.push(p);
-    if (this.fila.length > this.max) {
-      this.fila.shift();
-      this.descartadas++;
-    }
+    this.fila.adicionar(p, prioridadeDo(p.topico));
   }
 
-  /** Esvazia o buffer em ordem (chamado quando o uplink reconecta). */
+  /**
+   * Esvazia o buffer por prioridade quando o uplink reconecta. Cada item só
+   * sai do disco depois do PUBACK da nuvem (QoS 1).
+   */
   drenar(): void {
-    if (!this.fila.length) return;
-    const total = this.fila.length;
-    while (this.fila.length && this.cliente.connected) {
-      this.publicar(this.fila.shift()!);
+    const lote = this.fila.proximos(this.fila.pendentes);
+    if (!lote.length) return;
+    for (const item of lote) {
+      if (!this.cliente.connected) break;
+      this.publicar(item.dados, (erro) => {
+        if (!erro) this.confirmar(item.id);
+      });
     }
     log(
-      `uplink restabelecido: ${total} mensagens do buffer enviadas à nuvem` +
-        (this.descartadas
-          ? ` (${this.descartadas} descartadas por buffer cheio)`
+      `uplink restabelecido: ${lote.length} mensagens do buffer enviadas à nuvem (alarmes primeiro)` +
+        (this.fila.descartadas
+          ? ` (${this.fila.descartadas} descartadas por buffer cheio)`
           : ''),
     );
-    this.descartadas = 0;
+    this.fila.descartadas = 0;
   }
 
-  private publicar(p: Publicacao): void {
-    this.cliente.publish(p.topico, p.payload, { qos: 1 });
+  /** Junta as confirmações e regrava o arquivo uma vez por segundo. */
+  private confirmar(id: string): void {
+    this.confirmados.push(id);
+    this.timerConfirmacao ??= setTimeout(() => {
+      this.fila.confirmar(this.confirmados);
+      this.confirmados = [];
+      this.timerConfirmacao = null;
+    }, 1_000);
+  }
+
+  private publicar(p: Publicacao, aoConfirmar?: (erro?: Error) => void): void {
+    this.cliente.publish(p.topico, p.payload, { qos: 1 }, aoConfirmar);
     this.trafego.saidaMsgs++;
     this.trafego.saidaBytes += p.payload.length;
   }
@@ -220,7 +250,32 @@ function iniciar(
       retain: true,
     },
   });
-  const uplink = new Uplink(nuvem, config.bufferMax, trafego);
+  const chave = derivarChave(config.chaveFila);
+  const uplink = new Uplink(
+    nuvem,
+    new FilaPersistente<Publicacao>(
+      join(config.dadosDir, 'uplink.fila'),
+      chave,
+      config.bufferMax,
+    ),
+    trafego,
+  );
+  if (uplink.pendentes)
+    log(
+      `${uplink.pendentes} mensagens recuperadas do disco (buffer do uplink)`,
+    );
+
+  // Ingestão local por HTTP (RF-EDG-01) e sincronização em lotes (RF-EDG-02).
+  const local = new IngestaoLocal(
+    new FilaPersistente<MensagemLocal>(
+      join(config.dadosDir, 'ingestao.fila'),
+      chave,
+      config.bufferMax,
+    ),
+    config.apiUrl,
+  );
+  local.servir(config.httpPorta);
+  setInterval(() => void local.sincronizar(), config.intervaloSyncMs);
 
   nuvem.on('connect', () => {
     log(`uplink conectado à nuvem ${config.mqttNuvemUrl}`);
@@ -426,6 +481,7 @@ function iniciar(
     MF.bytes.inc({ direcao: 'entrada' }, numeros.entrada.bytes);
     MF.bytes.inc({ direcao: 'saida' }, numeros.saida.bytes);
     MF.buffer.set(uplink.pendentes);
+    MF.filaLocal.set(local.pendentes);
     MF.online.set(online);
     log(
       `janela ${config.janelaResumoMs / 1000}s · ${online}/${totalPostes} postes no ar · ${texto}`,
@@ -468,7 +524,11 @@ function iniciar(
 async function main(): Promise<void> {
   const config = lerFogConfig();
   log(`provisionando gateways a partir de ${config.apiUrl}...`);
-  const postes = await provisionar(config.apiUrl, log);
+  const postes = await provisionar(
+    config.apiUrl,
+    log,
+    join(config.dadosDir, 'provisionamento.json'),
+  );
 
   // Um gateway por bairro, cada um só com os postes do seu bairro.
   const porBairro = new Map<string, typeof postes>();

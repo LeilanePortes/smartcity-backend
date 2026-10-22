@@ -18,6 +18,14 @@ export interface FogConfig {
   janelaResumoMs: number;
   /// Porta do GET /metrics (Prometheus).
   metricasPorta: number;
+  /// Pasta das filas persistentes (volume do contêiner).
+  dadosDir: string;
+  /// Senha da cifra das filas (AES-256-GCM).
+  chaveFila: string;
+  /// Porta da ingestão local por HTTP.
+  httpPorta: number;
+  /// De quanto em quanto tempo tenta sincronizar a fila local com a central.
+  intervaloSyncMs: number;
   /// Máximo de mensagens guardadas enquanto a nuvem está fora (descarta as mais antigas).
   bufferMax: number;
 }
@@ -38,6 +46,10 @@ export function lerFogConfig(env: NodeJS.ProcessEnv = process.env): FogConfig {
     intervaloVerificacaoMs: numero(env.FOG_INTERVALO_VERIFICACAO_MS, 5_000),
     janelaResumoMs: numero(env.FOG_JANELA_RESUMO_MS, 60_000),
     metricasPorta: numero(env.FOG_METRICAS_PORTA, 9464),
-    bufferMax: numero(env.FOG_BUFFER_MAX, 5_000),
+    dadosDir: env.FOG_DADOS_DIR ?? './dados-fog',
+    chaveFila: env.FOG_CHAVE_FILA ?? 'troque-esta-chave-em-producao',
+    httpPorta: numero(env.FOG_HTTP_PORTA, 8081),
+    intervaloSyncMs: numero(env.FOG_SYNC_INTERVALO_MS, 5_000),
+    bufferMax: numero(env.FOG_BUFFER_MAX, 50_000),
   };
 }

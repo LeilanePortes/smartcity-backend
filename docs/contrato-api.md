@@ -482,6 +482,14 @@ publicar. Detalhes de cada campo no `API.md`.
 
 ---
 
+## Nó de borda (fog)
+
+`POST http://localhost:8081/ingestao` (mensagem canônica ou array, `Authorization: Bearer <token>`)
+→ `202 { enfileiradas, recusadas, pendentes }`, mesmo sem internet. A fila é persistente e cifrada
+e sincroniza com `POST /api/v1/ingestao/lote` em lotes, sem duplicar. Detalhes no `API.md`.
+
+---
+
 ## Observabilidade
 
 `GET /metrics` (fora do `/api/v1`) e `http://localhost:9464/metrics` (fog) no formato Prometheus.

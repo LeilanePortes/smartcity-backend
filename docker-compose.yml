@@ -181,6 +181,9 @@ services:
     command: ['bun', 'run', 'dist/fog/main.js']
     ports:
       - '9464:9464' # GET /metrics do nó de borda
+      - '8081:8081' # ingestão local por HTTP do nó de borda
+    volumes:
+      - smartcity-fog-dados:/dados
     environment:
       MQTT_URL: mqtt://mosquitto:1883
       MQTT_NUVEM_URL: mqtt://mosquitto-nuvem:1883
@@ -190,6 +193,11 @@ services:
       FOG_TIMEOUT_OFFLINE_MS: ${FOG_TIMEOUT_OFFLINE_MS:-30000}
       FOG_JANELA_RESUMO_MS: ${FOG_JANELA_RESUMO_MS:-60000}
       FOG_METRICAS_PORTA: 9464
+      # Fila persistente e cifrada (AES-256-GCM) no volume do fog. Troque a
+      # senha em produção (FOG_CHAVE_FILA no .env).
+      FOG_DADOS_DIR: /dados
+      FOG_CHAVE_FILA: ${FOG_CHAVE_FILA:-troque-esta-chave-em-producao}
+      FOG_HTTP_PORTA: 8081
       LOG_NIVEL: ${LOG_NIVEL:-info}
 
   # Adaptador plugável (RF-INT-03): medidor legado → contrato canônico. Fica
@@ -212,3 +220,4 @@ services:
 
 volumes:
   smartcity-pgdata:
+  smartcity-fog-dados:

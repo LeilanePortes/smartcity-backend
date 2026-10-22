@@ -66,6 +66,7 @@ da API rodando com o seed + `bun run db:backfill` padrão.
   - [`GET /alarmes`](#get-alarmes)
   - [`GET /alarmes/:id`](#get-alarmesid)
   - [Reconhecer e resolver](#post-alarmesidreconhecer--post-alarmesidresolver)
+- [Nó de borda (fog)](#nó-de-borda-fog)
 - [Observabilidade (`/metrics` e logs)](#observabilidade)
 - [`GET /`](#get-)
 - [WebSocket — tempo real](#websocket--tempo-real)
@@ -1389,6 +1390,33 @@ tentativas, erro, criadoEm, concluidoEm }`).
 - **`resolver`:** funciona num alarme `ATIVO` ou `RECONHECIDO`.
 - **Respostas:** `200` com o alarme · `409` se a transição não for permitida ·
   `404` se o alarme não existir.
+
+---
+
+## Nó de borda (fog)
+
+O fog é o nó de borda da plataforma (RF-EDG-01 e 02).
+
+- **Fila persistente e cifrada:** tudo o que iria para a nuvem com o link fora fica
+  em disco (volume `smartcity-fog-dados`), cifrado com AES-256-GCM (RF-SEG-05).
+  - A senha vem de `FOG_CHAVE_FILA`.
+  - A fila sobrevive a reinício do contêiner e cabe até `FOG_BUFFER_MAX` (padrão 50.000).
+  - **Sai por prioridade:** alarmes e resultados de OTA primeiro, depois eventos,
+    depois resumos (RF-EDG-05).
+  - Cada item só sai do disco depois da confirmação da nuvem.
+- **Ingestão local por HTTP:** `POST http://<fog>:8081/ingestao`, com a mensagem
+  canônica (ou um array) e `Authorization: Bearer <token do dispositivo>`.
+  - O fog valida contra o JSON Schema e responde `202 { enfileiradas, recusadas, pendentes }`,
+    mesmo sem internet.
+  - `GET :8081/fila` mostra quantas estão pendentes.
+- **Sincronização em lotes:** a cada 5 s, se a central responde, o fog envia até
+  1.000 mensagens por `POST /api/v1/ingestao/lote`, por dispositivo e em ordem de
+  medição.
+  - A central descarta duplicatas pelo `id_mensagem`: reenviar depois de uma falha
+    não duplica nada.
+  - Credencial revogada (401/403) é descartada com aviso.
+- **Sobe sem a central:** a lista de postes do provisionamento fica guardada no
+  volume.
 
 ---
 
