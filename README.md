@@ -186,6 +186,12 @@ ordenar → enriquecer → publicar.
 Os e-mails vão para o **Mailpit**, um servidor de e-mail de teste com a caixa em
 http://localhost:8025.
 
+**Kit do integrador** ([`docs/guia-integrador.md`](./docs/guia-integrador.md)):
+
+- exemplos em Python, JavaScript e Go ([`exemplos/`](./exemplos/));
+- adaptador plugável em contêiner ([`adaptadores/`](./adaptadores/));
+- script que cria o domínio "energia" só por configuração.
+
 O catálogo inicial é montado por [`prisma/catalogo.ts`](./prisma/catalogo.ts), que
 roda a cada subida do container sem apagar nada. Endpoints em
 [`API.md`](./API.md#catálogo).
